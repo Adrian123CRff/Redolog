@@ -3,3 +3,5 @@ runtime/
 tmp/
 *.log
 .env
+runtime-simulacion/
+.claude/

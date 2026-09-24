@@ -1,5 +1,9 @@
 # Entorno encontrado y plan de trabajo
 
+Documento historico del diagnostico inicial (21-22/09/2026). Para instalar y
+ejecutar el proyecto usa README.md y scripts/preparar-entorno.ps1; el laboratorio
+usa la imagen container-registry.oracle.com/database/free.
+
 ## Que vamos a desarrollar
 
 La aplicacion del grupo se escribira en Java. Permitira configurar estrategias,

@@ -1,0 +1,12 @@
+# Blueprint de Render: demostracion publica en MODO SIMULACION (plan gratuito).
+# En Render: New > Blueprint > seleccionar este repositorio.
+services:
+  - type: web
+    name: gestor-respaldos-rman
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/state
+    envVars:
+      - key: GESTOR_MODO
+        value: simulacion

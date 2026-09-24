@@ -1,9 +1,10 @@
 # Proyecto: automatizacion de estrategias de respaldo Oracle
 
-Estado: requisitos iniciales derivados de los apuntes y la transcripcion de clase.
+Estado: notas previas al enunciado, derivadas de los apuntes y la transcripcion.
+El 23/09/2026 se recibio el enunciado oficial; donde difieran, manda el enunciado.
+Ver docs/revision-enunciado.md (brechas y correcciones) y docs/analisis-y-diseno.md.
 Lenguaje elegido con el usuario: Java. Equipo local: Windows 11.
-Oracle localizado en Docker; ver docs/entorno-y-plan.md para el diagnostico actual.
-Pendiente: seleccionar el laboratorio RMAN y criterios formales de evaluacion.
+Laboratorio RMAN: contenedor rman-lab; ver docs/entorno-y-plan.md.
 
 ## Objetivo de la clase
 
@@ -118,14 +119,17 @@ estrategias con horarios distintos, un respaldo real, un fallo identificado y
 evidencia de recuperacion. Esta cobertura es una propuesta de aceptacion, no una
 rubrica entregada por el profesor. Las simulaciones deben identificarse como tales.
 
-## Informacion pendiente
+## Informacion pendiente (actualizada con el enunciado)
 
-- Version/edicion Oracle y estructura CDB/PDB del laboratorio.
-- Sistema operativo y ubicacion del servidor Oracle y del proceso RMAN.
-- Requisitos de interfaz y almacenamiento; el grupo prefiere Java.
-- Alcance exigido para tablas individuales y generacion de recomendaciones.
-- Definicion del profesor para los tipos "parcial completo" e "incompleto".
-- Fecha de entrega y rubrica, si existen fuera de la transcripcion.
+- Resuelto: Oracle 23ai Free (23.26.1) en el contenedor rman-lab, CDB FREE con
+  PDB FREEPDB1; RMAN se ejecuta dentro del contenedor.
+- Resuelto: el enunciado fija los elementos (base, tablespaces, datafiles, control
+  file, SPFILE, archived logs). No pide tablas individuales.
+- Resuelto: los tipos son completo, nivel 0, nivel 1 diferencial y acumulativo;
+  "parcial completo" e "incompleto" ya no se usan.
+- Resuelto: "recomendaciones" son avisos del control preventivo que el
+  administrador decide aplicar; la herramienta no las aplica sola.
+- Pendiente: fecha de entrega y rubrica, si existen fuera del enunciado.
 
 ## Verificacion inicial de la instalacion nativa
 

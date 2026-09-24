@@ -1,0 +1,12 @@
+.git
+.github
+.claude
+.mvn
+target
+runtime
+runtime-simulacion
+tmp
+docs
+scripts
+*.pdf
+*.log
