@@ -49,7 +49,7 @@ public final class Main {
                     if (requestOrigin != null && !allowed.contains(requestOrigin)) { send(exchange, 403, Map.of("error", "Origen no permitido.")); return; }
                     api(exchange, path, catalog, service, runtime, simulation);
                 } else {
-                    if (!exchange.getRequestMethod().equals("GET")) { send(exchange, 405, Map.of("error", "Metodo no permitido.")); return; }
+                    if (!Set.of("GET", "HEAD").contains(exchange.getRequestMethod())) { send(exchange, 405, Map.of("error", "Metodo no permitido.")); return; }
                     String resource = switch (path) { case "/" -> "index.html"; case "/app.js" -> "app.js"; case "/style.css" -> "style.css"; case "/lucide.min.js" -> "lucide.min.js"; default -> null; };
                     if (resource == null) { send(exchange, 404, Map.of("error", "No encontrado.")); return; }
                     try (var stream = Main.class.getResourceAsStream("/web/" + resource)) {
@@ -121,6 +121,9 @@ public final class Main {
     private static void send(HttpExchange x, int status, Object value) throws java.io.IOException { bytes(x, status, "application/json; charset=utf-8", JSON.writeValueAsBytes(value)); }
 
     private static void bytes(HttpExchange x, int status, String type, byte[] data) throws java.io.IOException {
-        x.getResponseHeaders().set("Content-Type", type); x.sendResponseHeaders(status, data.length); x.getResponseBody().write(data);
+        // Una respuesta a HEAD (la usan Render y los monitores de disponibilidad) no lleva cuerpo.
+        boolean head = x.getRequestMethod().equals("HEAD");
+        x.getResponseHeaders().set("Content-Type", type); x.sendResponseHeaders(status, head ? -1 : data.length);
+        if (!head) x.getResponseBody().write(data);
     }
 }
