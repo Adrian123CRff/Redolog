@@ -14,7 +14,7 @@ integridad.
   aprobacion se invalida.
 - Ejecucion programada, con evidencia por ejecucion: piezas comprobadas en disco,
   errores de RMAN, estados Exitoso / Con advertencias / Fallido y verificacion con
-  CROSSCHECK y RESTORE ... VALIDATE.
+  VALIDATE BACKUPSET sobre los conjuntos identificados de cada ejecucion.
 - Monitor con linea de tiempo, control preventivo (alertas, advertencias,
   recomendaciones e informativas) y ciclo de cada estrategia.
 
@@ -99,9 +99,54 @@ Dockerfile y `render.yaml` para publicar el modo simulacion gratis en Render. Ve
     .\mvnw.cmd test        (Windows)
     ./mvnw test            (macOS o Linux)
 
+Prueba local de extremo a extremo en Windows, con `rman-lab` y la aplicacion
+real ya iniciados (no sirve contra el modo simulacion):
+
+    powershell -ExecutionPolicy Bypass -File .\scripts\lab\prueba-flujo-local.ps1
+
+Crea una estrategia de prueba para FREEPDB1:LAB_DATOS, comprueba los bloqueos de
+aprobacion, hace un respaldo real con verificacion y observa un disparo automatico.
+No restaura ni borra archivos; conserva las copias generadas. Al terminar desactiva
+la estrategia de prueba y guarda resultados en `runtime/pruebas-locales/`.
+Requiere espacio disponible y puede tardar varios minutos. Si se interrumpe la
+terminal o una operacion queda incierta, revisar manualmente la estrategia antes
+de repetir la prueba; el script nunca libera una base incierta por su cuenta.
+
+En PowerShell, las opciones Java con puntos deben ir entre comillas. En este
+equipo Windows el inicio comprobado es:
+
+    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.port=8787" -jar "target/gestor-rman-0.1.0.jar"
+
 Prueba de recuperacion en el laboratorio (destructiva, solo sobre `rman-lab`):
 
     powershell -ExecutionPolicy Bypass -File .\scripts\lab\prueba-recuperacion.ps1
+
+Prueba ampliada con copia completa, incrementales y recuperacion aislada por
+tablespace (Oracle real, modifica solo objetos nuevos `QA_RMAN_*`):
+
+    powershell -ExecutionPolicy Bypass -File .\scripts\lab\prueba-ampliada.ps1
+
+Requiere la aplicacion local, ningun trabajo activo o programado y espacio libre
+superior al tamano de los datafiles mas 4 GiB. Crea un esquema sin autenticacion
+y un tablespace de 16 MiB, prueba nivel 0, diferencial y acumulativo, y restaura
+dos veces hacia archivos nuevos. Conserva las piezas, el historial, los objetos
+QA y sus archivos originales. No restaura toda la instancia ni modifica
+`LAB_DEMO.PEDIDOS`. Guarda resultados y tamanos reales en
+`runtime/pruebas-ampliadas/`. Puede tardar mas de diez minutos.
+
+Si falla o se interrumpe una recuperacion, revisar sus registros antes de repetir:
+el tablespace QA podria quedar offline. No liberar trabajos inciertos ni borrar
+archivos como parte de la repeticion. Las estrategias de esta prueba nacen
+desactivadas y sin horarios; no generan respaldos periodicos.
+
+Comprobacion del control preventivo y su bitacora, sin crear copias:
+
+    powershell -ExecutionPolicy Bypass -File .\scripts\lab\prueba-recomendaciones.ps1
+
+Ejecutar cuando no haya respaldos en curso. Crea una estrategia QA desactivada,
+aplica recomendaciones de archived logs y verificacion, comprueba que el script
+cambie y exija una nueva aprobacion, y conserva evidencia en
+`runtime/pruebas-recomendaciones/`. No modifica estrategias existentes.
 
 ## Estructura
 
@@ -125,6 +170,7 @@ Prueba de recuperacion en el laboratorio (destructiva, solo sobre `rman-lab`):
 - [Revision del avance contra el enunciado](docs/revision-enunciado.md)
 - [Analisis y diseno](docs/analisis-y-diseno.md)
 - [Evidencia: prueba de recuperacion](docs/evidencias/prueba-recuperacion.md)
+- [Pruebas locales ampliadas del 04/10/2026](docs/evidencias/pruebas-ampliadas-2026-10-04.md)
 - [Despliegue](docs/despliegue.md)
 
 ## Problemas frecuentes

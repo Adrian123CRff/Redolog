@@ -62,7 +62,7 @@ public class SimulatedRman extends Rman {
                     .append("\nFinished backup at ").append(when).append("\n\n");
             } else if (t.startsWith("CROSSCHECK")) {
                 out.append("using channel ORA_DISK_1\ncrosschecked backup piece: found to be 'AVAILABLE'\nCrosschecked 3 objects\n\n");
-            } else if (t.startsWith("RESTORE") && t.contains("VALIDATE")) {
+            } else if ((t.startsWith("RESTORE") && t.contains("VALIDATE")) || t.startsWith("VALIDATE BACKUPSET")) {
                 out.append("\nStarting restore at ").append(when).append("\nchannel ORA_DISK_1: starting validation of datafile backup set\nchannel ORA_DISK_1: validation complete, elapsed time: 00:00:01\nFinished restore at ").append(when).append("\n\n");
             }
         }
@@ -83,6 +83,12 @@ public class SimulatedRman extends Rman {
     }
 
     long sizeOf(String file) { return sizes.getOrDefault(file, 1_048_576L); }
+
+    @Override
+    public List<Long> backupSets(Database db, List<String> handles, Path log) {
+        Models.require(!handles.isEmpty(), "No hay piezas simuladas para verificar.");
+        return handles.stream().map(h -> Integer.toUnsignedLong(h.hashCode()) + 1).distinct().sorted().toList();
+    }
 
     @Override
     public FileCheck checkFiles(Database db, List<String> files, Path log) {

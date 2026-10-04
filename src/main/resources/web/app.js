@@ -152,7 +152,7 @@ function renderAlerts() {
 function renderHealth() {
   $('#health-body').innerHTML = state.strategies.length ? state.strategies.map(v => {
     const s = v.strategy;
-    const mine = state.executions.filter(e => e.strategyId === s.id && e.operation === 'BACKUP');
+    const mine = state.executions.filter(e => e.strategyId === s.id && e.operation === 'BACKUP' && e.evidence?.coverageHash === v.coverageHash);
     const lastRun = mine[0], lastOk = mine.find(e => ['EXITOSO', 'CON_ADVERTENCIAS'].includes(e.status));
     const age = lastOk ? hoursSince(lastOk.finishedAt) : null, ratio = age === null ? 1 : Math.min(age / v.rpoHours, 1);
     const cls = age === null || age >= v.rpoHours ? 'bad' : age >= v.rpoHours * 0.75 ? 'warn' : 'good';
@@ -235,14 +235,13 @@ function mark(cx, cy, body, tip, executionId = '') {
 }
 
 // Ciclo de la estrategia (enunciado, seccion 15): configurada -> aprobada -> programada -> ejecutada -> verificada.
-const CONFIG_ERRORS = ['TABLESPACE_INEXISTENTE', 'DATAFILE_INEXISTENTE', 'DESTINO_INEXISTENTE', 'ARCHIVELOG_SIN_MODO'];
+const CONFIG_ERRORS = ['TABLESPACE_INEXISTENTE', 'DATAFILE_INEXISTENTE', 'DESTINO_INEXISTENTE', 'ARCHIVELOG_SIN_MODO', 'SIN_COMPROBAR', 'SIN_CONEXION', 'SIN_RMAN', 'MODO_DESCONOCIDO', 'EN_LINEA_NOARCHIVELOG'];
 const GLYPH = {done: '<path d="M4.5 8.2l2.3 2.3 4.7-4.9"/>', bad: '<path d="M5.5 5.5l5 5m0-5l-5 5"/>', warn: '<path d="M8 4.5v4.3m0 2.4v.1"/>', todo: ''};
 function lifecycle(v) {
-  const s = v.strategy, mine = state.executions.filter(e => e.strategyId === s.id);
+  const s = v.strategy, mine = state.executions.filter(e => e.strategyId === s.id && e.evidence?.coverageHash === v.coverageHash);
   const lastRun = mine.find(e => e.operation === 'BACKUP' && e.status !== 'EJECUTANDO');
   const lastOk = mine.find(e => e.operation === 'BACKUP' && ['EXITOSO', 'CON_ADVERTENCIAS'].includes(e.status));
-  const verified = lastOk && (lastOk.details.some(d => d.startsWith('Verificacion posterior correcta'))
-    || mine.some(e => e.operation === 'VALIDATE' && e.status === 'EXITOSO' && e.startedAt >= lastOk.finishedAt));
+  const verified = lastOk && v.verified;
   const configBad = state.alerts.some(a => a.strategyId === s.id && CONFIG_ERRORS.includes(a.code));
   const steps = [
     ['Configurada', configBad ? 'bad' : 'done', configBad ? 'Corregir la configuración' : ''],
@@ -250,7 +249,7 @@ function lifecycle(v) {
     ['Programada', v.scheduled ? 'done' : 'todo', !s.enabled ? 'Activar la estrategia' : !s.times.length ? 'Agregar horarios' : 'Aprobar para programar'],
     ['Ejecutada', !lastRun ? 'todo' : lastRun.status === 'FALLIDO' ? 'bad' : lastRun.status === 'CON_ADVERTENCIAS' ? 'warn' : ['OMITIDO', 'INCIERTO'].includes(lastRun.status) ? 'warn' : 'done',
       !lastRun ? 'Esperar o ejecutar el primer respaldo' : 'Revisar la última ejecución'],
-    ['Verificada', verified ? 'done' : 'todo', 'Verificar con RESTORE … VALIDATE']
+    ['Verificada', verified ? 'done' : 'todo', 'Verificar conjuntos con RMAN']
   ];
   const next = steps.find(st => st[1] !== 'done');
   const dots = steps.map(([label, st], i) => `${i ? `<i class="link ${steps[i - 1][1] === 'done' ? 'on' : ''}"></i>` : ''}<svg class="pdot ${st}" viewBox="0 0 16 16" role="img" aria-label="${label}: ${{done: 'hecho', bad: 'con error', warn: 'con advertencias', todo: 'pendiente'}[st]}"><title>${label}</title><circle cx="8" cy="8" r="7"/><g>${GLYPH[st]}</g></svg>`).join('');
@@ -294,7 +293,7 @@ function renderStrategies() {
       <td><small class="dark">${esc(v.how)}</small><small>Destino ${esc(s.destination)}</small></td>
       <td><small class="dark">${esc(v.schedule)}</small><small>${v.nextRun ? 'Próxima: ' + formatDate(v.nextRun) : ''}</small></td>
       <td>${status}</td>
-      <td><div class="row-actions">${button('run', s.id, 'Ejecutar respaldo ahora', 'play', 'run')}${button('validate', s.id, 'Verificar respaldos (RESTORE VALIDATE)', 'shield-check')}${button('review', s.id, 'Revisar y aprobar script', 'file-check-2')}${button('edit', s.id, 'Editar estrategia', 'pencil')}${button('delete', s.id, 'Eliminar estrategia', 'trash-2')}</div></td>
+      <td><div class="row-actions">${button('run', s.id, 'Ejecutar respaldo ahora', 'play', 'run')}${button('validate', s.id, 'Verificar conjuntos del ultimo respaldo', 'shield-check')}${button('review', s.id, 'Revisar y aprobar script', 'file-check-2')}${button('edit', s.id, 'Editar estrategia', 'pencil')}${button('delete', s.id, 'Eliminar estrategia', 'trash-2')}</div></td>
     </tr>`;
   }).join('') : `<tr><td colspan="6" class="empty">${icon('layers')}No hay estrategias para esta selección.</td></tr>`;
 }
@@ -474,7 +473,8 @@ async function openExecution(id, silent = false) {
   const facts = [['Estrategia', e.strategyName], ['Base de datos', e.databaseName || dbName(e.databaseId)], ['Fecha', fmt(e.startedAt, {dateStyle: 'medium'})],
     ['Hora de inicio', fmt(e.startedAt, {timeStyle: 'medium', hourCycle: 'h23'})], ['Hora de finalización', e.finishedAt ? fmt(e.finishedAt, {timeStyle: 'medium', hourCycle: 'h23'}) : 'En curso'],
     ['Duración', duration(e)], ['Tipo de respaldo', e.backupType || e.operation], ['Origen', e.source === 'HORARIO' ? 'Programada (' + formatDate(e.plannedAt) + ')' : 'Manual'],
-    ['Código de salida RMAN', e.exitCode ?? '—'], ['Ubicación del respaldo', e.destination || '—'], ['Huella del script', e.scriptHash || '—']];
+    ['Código de salida RMAN', e.exitCode ?? '—'], ['Ubicación del respaldo', e.destination || '—'], ['Huella del script', e.scriptHash || '—'],
+    ['Conjuntos RMAN', e.evidence?.backupSets?.join(', ') || 'Sin identificar'], ['Respaldo verificado', e.evidence?.verifies || (e.evidence?.verified ? e.id : 'Sin verificar')]];
   $('#detail-facts').innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
   $('#show-verify').classList.toggle('hidden', !data.verifyLog);
   showDetail();

@@ -70,16 +70,25 @@ final class Demo {
                 details.add("La ejecucion duro " + seconds / 60 + " min y excedio la ventana de " + s.windowMinutes() + " min.");
             }
             status = details.isEmpty() ? "EXITOSO" : "CON_ADVERTENCIAS";
-            if (s.verifyAfter()) details.add("Verificacion posterior correcta: CROSSCHECK y RESTORE ... VALIDATE sin errores.");
             message = (status.equals("EXITOSO") ? "Respaldo realizado. " : "Respaldo realizado con advertencias. ") + pieces.size() + " pieza(s) comprobadas en " + s.destination() + ".";
         }
         String id = UUID.randomUUID().toString();
         var e = new Execution(id, s.id(), s.name(), db.id(), db.name(), "BACKUP", RmanScript.how(s) + " | " + RmanScript.what(s), "HORARIO",
-            at.toString(), at.toString(), at.plusSeconds(seconds).toString(), status, code, message, s.destination(), pieces, details, RmanScript.hash(script));
+            at.toString(), at.toString(), at.plusSeconds(seconds).toString(), status, code, message, s.destination(), pieces, details, RmanScript.hash(script),
+            new Evidence(RmanScript.coverageHash(s, db), Rman.pieces(out.toString()),
+                code == 0 ? rman.backupSets(db, Rman.pieces(out.toString()), runtime.resolve("demo-sets.log")) : List.of(), null, false));
         Path dir = runtime.resolve("executions").resolve(id);
         Files.createDirectories(dir);
         Files.writeString(dir.resolve("script.rman"), script);
         Files.writeString(dir.resolve("output.log"), out);
+        if (code == 0 && s.verifyAfter()) {
+            String verify = RmanScript.validateSets(e.evidence().backupSets());
+            Files.writeString(dir.resolve("verify.rman"), verify);
+            var verification = new StringBuilder(SimulatedRman.MARK).append('\n');
+            int verifiedCode = rman.output(db, verify, at.plusSeconds(seconds), verification, null);
+            Files.writeString(dir.resolve("verify.log"), verification);
+            e = e.withEvidence(e.evidence().verified(verifiedCode == 0));
+        }
         catalog.insert(e, s.id() + "|" + at);
     }
 }

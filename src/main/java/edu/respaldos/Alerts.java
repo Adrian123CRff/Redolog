@@ -58,7 +58,8 @@ public final class Alerts {
         for (var issue : RmanScript.check(s, st)) {
             switch (issue.code()) {
                 case "SIN_RESPONSABLE", "SIN_DESCRIPCION" -> alerts.add(new Alert("ADVERTENCIA", "INCOMPLETA", n + ": configuracion incompleta", issue.message(), s.databaseId(), s.id(), "EDITAR", "Completar"));
-                case "TABLESPACE_INEXISTENTE", "DATAFILE_INEXISTENTE", "DESTINO_INEXISTENTE", "ARCHIVELOG_SIN_MODO" ->
+                case "TABLESPACE_INEXISTENTE", "DATAFILE_INEXISTENTE", "DESTINO_INEXISTENTE", "ARCHIVELOG_SIN_MODO",
+                     "SIN_COMPROBAR", "SIN_CONEXION", "SIN_RMAN", "MODO_DESCONOCIDO", "EN_LINEA_NOARCHIVELOG" ->
                     alerts.add(new Alert("ALERTA", issue.code(), n + ": configuracion invalida", issue.message(), s.databaseId(), s.id(), "EDITAR", "Corregir"));
                 case "FRECUENCIA_INSUFICIENTE" -> alerts.add(new Alert("ADVERTENCIA", issue.code(), n + ": frecuencia insuficiente para su prioridad", issue.message(), s.databaseId(), s.id(), "EDITAR", "Ajustar horario"));
                 case "ESPACIO_INSUFICIENTE" -> alerts.add(new Alert("ADVERTENCIA", issue.code(), n + ": espacio insuficiente en destino", issue.message(), s.databaseId(), s.id(), null, null));
@@ -69,7 +70,12 @@ public final class Alerts {
             }
         }
 
-        var mine = in.executions().stream().filter(e -> s.id().equals(e.strategyId())).toList();
+        var db = in.databases().stream().filter(d -> d.id().equals(s.databaseId())).findFirst();
+        var mine = ExecutionEvidence.current(in.executions(), s, db.map(d -> RmanScript.coverageHash(s, d)).orElse(""));
+        if (mine.stream().noneMatch(e -> e.operation().equals("BACKUP") && e.succeeded())
+                && in.executions().stream().anyMatch(e -> s.id().equals(e.strategyId()) && e.succeeded()))
+            alerts.add(new Alert("ADVERTENCIA", "EVIDENCIA_ANTERIOR", n + ": falta evidencia del alcance actual",
+                "El historial anterior se conserva, pero no acredita esta configuracion. Ejecuta y verifica un nuevo respaldo.", s.databaseId(), s.id(), "EJECUTAR", "Ejecutar ahora"));
         var backups = mine.stream().filter(e -> e.operation().equals("BACKUP") && !e.status().equals("EJECUTANDO")).toList();
         if (!backups.isEmpty()) {
             var last = backups.get(0);
@@ -78,6 +84,8 @@ public final class Alerts {
             if (last.status().equals("CON_ADVERTENCIAS"))
                 alerts.add(new Alert("ADVERTENCIA", "EJECUCION_CON_ADVERTENCIAS", n + ": ultima ejecucion con advertencias", last.message(), s.databaseId(), s.id(), "VER:" + last.id(), "Ver evidencia"));
         }
+        mine.stream().filter(e -> e.operation().equals("VALIDATE")).findFirst().filter(e -> e.status().equals("FALLIDO")).ifPresent(e ->
+            alerts.add(new Alert("ALERTA", "VERIFICACION_FALLIDA", n + ": ultima verificacion fallida", e.message(), s.databaseId(), s.id(), "VER:" + e.id(), "Ver evidencia")));
 
         if (s.enabled() && approved && !s.times().isEmpty()) {
             // Respaldos programados que no se ejecutaron (aplicacion detenida, base ocupada, etc.).
@@ -113,10 +121,9 @@ public final class Alerts {
 
         // Verificacion de recuperabilidad: un respaldo que no se ha leido no esta comprobado.
         var lastBackupOk = backups.stream().filter(Execution::succeeded).findFirst();
-        if (lastBackupOk.isPresent() && !s.verifyAfter()) {
-            var lastValidation = mine.stream().filter(e -> e.operation().equals("VALIDATE") && e.succeeded()).findFirst();
-            if (lastValidation.isEmpty() || lastValidation.get().startedAt().compareTo(lastBackupOk.get().finishedAt()) < 0)
-                alerts.add(new Alert("RECOMENDACION", "SIN_VERIFICAR", n + ": verificar el ultimo respaldo", "El ultimo respaldo no se ha verificado con RESTORE ... VALIDATE. Que RMAN termine sin errores no garantiza que se pueda restaurar.", s.databaseId(), s.id(), "VERIFICAR", "Verificar ahora"));
+        if (lastBackupOk.isPresent()) {
+            if (!ExecutionEvidence.verified(lastBackupOk.get(), mine))
+                alerts.add(new Alert("RECOMENDACION", "SIN_VERIFICAR", n + ": verificar el ultimo respaldo", "Los conjuntos de este respaldo no tienen una verificacion vigente con VALIDATE BACKUPSET. Que RMAN termine sin errores no garantiza que se pueda restaurar.", s.databaseId(), s.id(), "VERIFICAR", "Verificar ahora"));
         }
     }
 

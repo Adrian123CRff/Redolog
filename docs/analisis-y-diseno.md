@@ -69,7 +69,7 @@ Funcionales:
 | RF08 | Aprobar el script; invalidar la aprobacion si la configuracion cambia |
 | RF09 | Programar y ejecutar automaticamente las estrategias aprobadas; permitir la ejecucion manual |
 | RF10 | Registrar la evidencia de cada ejecucion (seccion 10 del enunciado) y consultar el historial |
-| RF11 | Verificar respaldos con CROSSCHECK y RESTORE ... VALIDATE |
+| RF11 | Identificar los conjuntos de cada ejecucion y verificarlos con VALIDATE BACKUPSET |
 | RF12 | Detectar las condiciones de la seccion 11 y mostrarlas con su nivel y su accion |
 | RF13 | Aplicar una recomendacion solo por decision del administrador |
 | RF14 | Registrar en una bitacora las acciones del administrador |
@@ -114,7 +114,9 @@ Los valores estan en Models.rpoHours y pueden ajustarse si el grupo justifica ot
 | Tiempo de respaldo | Alto | Alto | Bajo | Bajo a medio |
 | Frecuencia tipica | Semanal o puntual | Semanal | Diaria o varias veces al dia | Diaria |
 | Volumen modificado | Irrelevante | Irrelevante | Adecuado si cambia poco | Adecuado si cambia poco o moderado |
-| Complejidad de recuperacion | Baja: una pieza | Baja si se usa solo | Mayor: nivel 0 + todos los nivel 1 | Media: nivel 0 + el ultimo nivel 1 |
+| Complejidad de recuperacion | Menor cadena de datos; puede contener varias piezas y requerir redo | Base de la cadena; puede requerir redo | Mayor: nivel 0 + diferenciales necesarios + redo | Media: nivel 0 + acumulativo aplicable + redo |
+| Necesidades de disponibilidad | Mayor tiempo de copia; puede simplificar restauracion frente a cadenas largas | Inversion periodica de tiempo para sostener incrementales frecuentes | Copias frecuentes pequenas; recuperar puede requerir aplicar mas conjuntos | Mas trabajo al respaldar, pero menos incrementales al recuperar |
+| Proteccion de informacion | Copia de todos los bloques usados; no sustituye el redo ni sirve de base incremental | Punto de partida que debe conservarse junto a los incrementales necesarios | Protege cambios frecuentes, condicionado a conservar la cadena necesaria | Reune cambios desde nivel 0; aun depende de esa base y del redo requerido |
 | Base de incrementales | No | Si | No aplica | No aplica |
 
 Notas verificadas en el laboratorio:
@@ -124,8 +126,12 @@ Notas verificadas en el laboratorio:
 - En Oracle 23ai, si se ejecuta un nivel 1 sin nivel 0, RMAN copia los bloques
   desde la creacion del datafile y lo registra como nivel 1. No falla. Por eso el
   monitor recomienda crear la estrategia de nivel 0.
-- Cualquiera de los tipos solo permite volver al momento del respaldo. Para
-  recuperar hasta un momento posterior se necesitan los archived redo logs.
+- Restaurar copia archivos; recuperar aplica redo y, cuando corresponda,
+  incrementales. Un respaldo de datos tomado en linea puede necesitar redo para
+  alcanzar consistencia, no solamente para recuperar cambios posteriores.
+- FULL describe que bloques se copian, no un numero fijo de archivos o piezas.
+- Los umbrales de 24/72/168 h miden antiguedad del respaldo. No demuestran por si
+  solos el RPO: la perdida recuperable depende tambien de la cadena y del redo.
 
 ## ARCHIVELOG y NOARCHIVELOG
 
@@ -158,11 +164,23 @@ Comportamiento de la herramienta (la herramienta nunca cambia el modo):
 | Archived redo logs | BACKUP ... ARCHIVELOG ALL NOT BACKED UP 1 TIMES, despues de los datos |
 | Control file | BACKUP ... CURRENT CONTROLFILE, al final |
 | SPFILE | BACKUP ... SPFILE |
-| Verificacion | CROSSCHECK BACKUP TAG, RESTORE <alcance> VALIDATE, RESTORE CONTROLFILE/SPFILE/ARCHIVELOG ALL VALIDATE |
-| Cuando | Expresiones cron de Quartz, por ejemplo "0 0 2 ? * SUN" o "0 30 0/4 ? * MON-FRI" |
+| Verificacion | VALIDATE BACKUPSET por cada clave obtenida de las piezas de la ejecucion; no se certifica una ejecucion usando RESTORE VALIDATE generico |
+| Cuando | Cron para horas diarias/semanales; SimpleTrigger continuo para intervalos, con calendario de dias permitidos |
 
 Implementacion: RmanScript.backup, RmanScript.validate y Schedules.cron. La
 aprobacion guarda la huella SHA-256 del script; cualquier cambio la invalida.
+El script incluye como comentarios los datos de la politica y su horario. Una
+edicion del horario exige nueva aprobacion y reinicia el periodo de control de
+omisiones; no se atribuyen faltas retroactivas a un horario recien modificado.
+
+Los intervalos se anclan a la fecha y hora iniciales. Cada N horas significa N
+horas transcurridas, incluso al cruzar medianoche. Los disparos que caen en dias
+excluidos se omiten sin reiniciar el intervalo. La ventana representa una duracion
+maxima advertida, no una franja obligatoria de inicio y fin.
+
+Antes de aprobar se actualiza el diagnostico. Antes de despachar cada respaldo se
+actualiza nuevamente y se bloquea si hay errores. Estas comprobaciones no cambian
+el modo de archivado ni el estado de apertura de Oracle.
 
 Flujo de construccion de una estrategia (seccion 8 del enunciado):
 
@@ -205,7 +223,7 @@ flowchart LR
 | Aprobacion con huella | Solo se ejecuta lo que el administrador reviso |
 | Programacion automatica | Elimina la dependencia de ejecutar a mano |
 | Comprobacion de piezas en disco | No confunde "RMAN termino" con "hay respaldo" |
-| CROSSCHECK y RESTORE ... VALIDATE | Comprueba que el respaldo se puede leer y restaurar |
+| VALIDATE BACKUPSET y vinculo a la ejecucion | Comprueba la lectura de los conjuntos identificados; no sustituye una recuperacion real ni demuestra por si solo continuidad de redo |
 | Historial y bitacora | Evidencia auditable de que se hizo, cuando y quien lo aprobo |
 | Alertas y recomendaciones | Avisan antes de que la falta de un respaldo se convierta en perdida de datos |
 
@@ -256,6 +274,10 @@ El contenedor rman-lab ejecuta Oracle AI Database 26ai Free (23.26) con RMAN;
 ## Modelo de datos
 
 Cada tabla H2 guarda el registro completo en JSON y lo indexa por su clave.
+Las relaciones FK del diagrama son conceptuales; no son restricciones fisicas
+sobre campos dentro del JSON. Las ejecuciones nuevas guardan evidencia estructurada:
+huella del alcance, rutas de piezas, claves de conjuntos, respaldo verificado y
+resultado de verificacion. El historial antiguo permanece sin certificacion retroactiva.
 
 ```mermaid
 erDiagram
@@ -329,12 +351,13 @@ sequenceDiagram
     Q->>S: disparo (estrategia, hora prevista)
     S->>S: script aprobado? base libre?
     S->>C: insertar ejecucion (clave de ocurrencia unica)
+    S->>O: diagnostico actualizado y validacion previa
     S->>R: ejecutar script
     R->>O: docker exec rman target /
     O-->>R: salida RMAN
     R->>O: stat de cada pieza
     opt verificacion posterior
-        R->>O: CROSSCHECK + RESTORE ... VALIDATE
+        R->>O: identificar conjuntos por piezas y VALIDATE BACKUPSET
     end
     S->>C: estado final y evidencia
 ```
@@ -371,3 +394,8 @@ Decisiones de diseno:
   varias estrategias sobre los mismos datos.
 - No gestiona retencion (DELETE OBSOLETE) ni cintas (SBT); el enunciado no los
   pide.
+- La consulta del historial ya no descarta registros al superar 500 ejecuciones.
+  Para volumenes grandes se debe agregar paginacion y consultas operativas
+  independientes, sin volver a limitar la deteccion de ejecuciones inciertas.
+- La lectura correcta de conjuntos no garantiza una recuperacion a cualquier
+  instante. Debe probarse la cadena de nivel 0/incrementales y redo en laboratorio.

@@ -44,7 +44,7 @@ public final class Catalog {
 
     public List<Database> databases() throws Exception { return list("SELECT payload FROM bases ORDER BY id", Database.class); }
     public List<Strategy> strategies() throws Exception { return list("SELECT payload FROM strategies ORDER BY id", Strategy.class); }
-    public List<Execution> executions() throws Exception { return list("SELECT payload FROM executions ORDER BY created DESC LIMIT 500", Execution.class); }
+    public List<Execution> executions() throws Exception { return list("SELECT payload FROM executions ORDER BY created DESC, id DESC", Execution.class); }
     public List<Approval> approvals() throws Exception { return list("SELECT payload FROM approvals", Approval.class); }
     public List<DatabaseStatus> statuses() throws Exception { return list("SELECT payload FROM db_status", DatabaseStatus.class); }
     public List<Event> events() throws Exception { return list("SELECT payload FROM events ORDER BY created DESC LIMIT 100", Event.class); }

@@ -58,6 +58,11 @@ class RmanScriptTest {
         assertTrue(script.contains("CROSSCHECK BACKUP TAG 'EST001_PEDIDOS';"));
         assertTrue(script.contains("RESTORE TABLESPACE FREEPDB1:LAB_DATOS VALIDATE;"));
         assertTrue(script.contains("RESTORE CONTROLFILE VALIDATE;"));
+        String exact = RmanScript.validateSets(List.of(12L, 4L, 12L));
+        assertTrue(exact.contains("VALIDATE BACKUPSET 4;\nVALIDATE BACKUPSET 12;"));
+        assertFalse(exact.contains("RESTORE"));
+        assertThrows(IllegalArgumentException.class, () -> RmanScript.validateSets(List.of()));
+        assertThrows(IllegalArgumentException.class, () -> RmanScript.validateSets(List.of(-1L)));
     }
 
     @Test
@@ -128,5 +133,7 @@ class RmanScriptTest {
         assertEquals(Models.DEFAULT_DESTINATION, s.destination());
         var e = json.readValue("{\"id\":\"e\",\"strategyId\":\"x\",\"databaseId\":\"db1\",\"operation\":\"BACKUP\",\"source\":\"MANUAL\",\"startedAt\":\"2026-09-22T21:17:33Z\",\"status\":\"CORRECTA\"}", Execution.class);
         assertEquals("EXITOSO", e.status());
+        assertFalse(e.evidence().verified());
+        assertNull(e.evidence().coverageHash());
     }
 }

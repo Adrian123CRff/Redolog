@@ -3,7 +3,8 @@ package edu.respaldos;
 import edu.respaldos.Models.*;
 import java.time.*;
 import java.util.*;
-import org.quartz.CronExpression;
+import org.quartz.*;
+import org.quartz.impl.calendar.WeeklyCalendar;
 
 /** Traduce el "CUÁNDO" de una estrategia a expresiones cron de Quartz y calcula sus ocurrencias. */
 public final class Schedules {
@@ -11,37 +12,60 @@ public final class Schedules {
     private static final Map<String, String> DAY_NAMES = Map.of("MON", "lun", "TUE", "mar", "WED", "mie", "THU", "jue", "FRI", "vie", "SAT", "sab", "SUN", "dom");
 
     public static List<String> cron(Strategy s) {
+        Models.require(!s.frequency().equals("INTERVALO"), "Los intervalos usan un disparador continuo, no cron.");
         String days = String.join(",", s.days());
-        return s.times().stream().map(LocalTime::parse).map(t -> s.frequency().equals("INTERVALO")
-            ? "0 " + t.getMinute() + " " + t.getHour() + "/" + s.intervalHours() + " ? * " + days
-            : "0 " + t.getMinute() + " " + t.getHour() + " ? * " + days).toList();
+        return s.times().stream().map(LocalTime::parse).map(t -> "0 " + t.getMinute() + " " + t.getHour() + " ? * " + days).toList();
     }
 
     public static Instant startsAt(Strategy s, ZoneId zone) {
-        return LocalDate.parse(s.startDate()).atStartOfDay(zone).toInstant();
+        return s.frequency().equals("INTERVALO") && !s.times().isEmpty()
+            ? LocalDate.parse(s.startDate()).atTime(LocalTime.parse(s.times().get(0))).atZone(zone).toInstant()
+            : LocalDate.parse(s.startDate()).atStartOfDay(zone).toInstant();
+    }
+
+    public static WeeklyCalendar calendar(Strategy s, ZoneId zone) {
+        var calendar = new WeeklyCalendar(TimeZone.getTimeZone(zone));
+        for (int day = 1; day <= 7; day++)
+            calendar.setDayExcluded(day, !s.days().contains(Models.DAYS.get((day + 5) % 7)));
+        return calendar;
+    }
+
+    /** Los mismos disparadores alimentan Quartz y la vista previa. */
+    public static List<Trigger> triggers(Strategy s, ZoneId zone) {
+        if (s.times().isEmpty()) return List.of();
+        Date start = Date.from(startsAt(s, zone));
+        if (s.frequency().equals("INTERVALO")) return List.of(TriggerBuilder.newTrigger()
+            .withIdentity(s.id() + "_0").forJob(s.id()).startAt(start).modifiedByCalendar(s.id())
+            .withSchedule(SimpleScheduleBuilder.simpleSchedule().withIntervalInHours(s.intervalHours()).repeatForever()
+                .withMisfireHandlingInstructionNextWithRemainingCount()).build());
+        var result = new ArrayList<Trigger>();
+        for (String expression : cron(s)) result.add(TriggerBuilder.newTrigger().withIdentity(s.id() + "_" + result.size())
+            .forJob(s.id()).startAt(start).withSchedule(CronScheduleBuilder.cronSchedule(expression)
+                .inTimeZone(TimeZone.getTimeZone(zone)).withMisfireHandlingInstructionDoNothing()).build());
+        return result;
     }
 
     /** Ocurrencias en (from, to], como maximo {@code limit}. */
     public static List<Instant> occurrences(Strategy s, Instant from, Instant to, ZoneId zone, int limit) {
         var result = new TreeSet<Instant>();
+        if (limit <= 0 || !to.isAfter(from)) return List.of();
         Instant start = startsAt(s, zone);
         Instant begin = from.isBefore(start) ? start.minusSeconds(1) : from;
-        for (String expression : cron(s)) {
-            try {
-                var cron = new CronExpression(expression);
-                cron.setTimeZone(TimeZone.getTimeZone(zone));
-                Date next = cron.getTimeAfter(Date.from(begin));
-                while (next != null && !next.toInstant().isAfter(to) && result.size() < limit * 2) {
-                    result.add(next.toInstant());
-                    next = cron.getTimeAfter(next);
-                }
-            } catch (java.text.ParseException e) { throw new IllegalStateException("Expresion cron invalida: " + expression, e); }
+        var calendar = calendar(s, zone);
+        for (var trigger : triggers(s, zone)) {
+            Date next = trigger.getFireTimeAfter(Date.from(begin));
+            int count = 0;
+            while (next != null && !next.toInstant().isAfter(to) && count < limit) {
+                if (calendar.isTimeIncluded(next.getTime())) { result.add(next.toInstant()); count++; }
+                next = trigger.getFireTimeAfter(next);
+            }
         }
         return result.stream().limit(limit).toList();
     }
 
     public static Instant next(Strategy s, Instant after, ZoneId zone) {
-        var list = occurrences(s, after, after.plus(Duration.ofDays(60)), zone, 1);
+        Instant start = startsAt(s, zone);
+        var list = occurrences(s, after, (start.isAfter(after) ? start : after).plus(Duration.ofDays(60)), zone, 1);
         return list.isEmpty() ? null : list.get(0);
     }
 

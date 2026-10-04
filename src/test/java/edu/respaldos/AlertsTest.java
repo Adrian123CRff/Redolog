@@ -30,6 +30,10 @@ class AlertsTest {
 
     static Set<String> codes(List<Alert> alerts) { return new HashSet<>(alerts.stream().map(Alert::code).toList()); }
 
+    static Execution current(Execution e, Strategy s) {
+        return e.withEvidence(new Evidence(RmanScript.coverageHash(s, new Database("db1", "Laboratorio", "rman-lab")), List.of("/x.bkp"), List.of(1L), null, false));
+    }
+
     @Test
     void unapprovedStrategyIsFlagged() {
         var alerts = Alerts.evaluate(input(weekly("BAJA"), List.of(), Set.of(), null));
@@ -59,7 +63,7 @@ class AlertsTest {
         Instant sunday = LocalDateTime.of(2026, 9, 20, 2, 0).atZone(ZONE).toInstant();
         var ok = new Execution("e1", s.id(), s.name(), "db1", "Laboratorio", "BACKUP", "FULL", "HORARIO", sunday.toString(),
             sunday.toString(), sunday.plusSeconds(90).toString(), "EXITOSO", 0, "ok", "/opt/oracle/backup", List.of("/x.bkp"), List.of(), "h");
-        var alerts = Alerts.evaluate(input(s, List.of(ok), Set.of(s.id() + "|" + sunday), approval(s, NOW.minus(Duration.ofDays(10)))));
+        var alerts = Alerts.evaluate(input(s, List.of(current(ok, s)), Set.of(s.id() + "|" + sunday), approval(s, NOW.minus(Duration.ofDays(10)))));
         var set = codes(alerts);
         assertFalse(set.contains("NO_EJECUTADA"));
         assertFalse(set.contains("SIN_RESPALDO_RECIENTE"));
@@ -71,7 +75,7 @@ class AlertsTest {
         var s = weekly("MEDIA");
         var failed = new Execution("e2", s.id(), s.name(), "db1", "Laboratorio", "BACKUP", "FULL", "MANUAL", null,
             NOW.minusSeconds(600).toString(), NOW.minusSeconds(500).toString(), "FALLIDO", 1, "RMAN informo un error", "/opt/oracle/backup", List.of(), List.of(), "h");
-        var alert = Alerts.evaluate(input(s, List.of(failed), Set.of(), null)).stream().filter(a -> a.code().equals("EJECUCION_FALLIDA")).findFirst().orElseThrow();
+        var alert = Alerts.evaluate(input(s, List.of(current(failed, s)), Set.of(), null)).stream().filter(a -> a.code().equals("EJECUCION_FALLIDA")).findFirst().orElseThrow();
         assertEquals("ALERTA", alert.level());
         assertEquals("VER:e2", alert.action());
     }
@@ -80,9 +84,26 @@ class AlertsTest {
     void scheduleOccurrencesAndDescription() {
         var s = new Strategy("s9", "EST003", null, "db1", null, "ALTA", true, "COMPONENTS", null, null, true, false, false, "FULL", false, false,
             "2026-09-23", "INTERVALO", List.of("MON", "TUE", "WED", "THU", "FRI"), List.of("00:30"), 4, null, null);
-        assertEquals(List.of("0 30 0/4 ? * MON,TUE,WED,THU,FRI"), Schedules.cron(s));
+        assertEquals(1, Schedules.triggers(s, ZONE).size());
         var next = Schedules.occurrences(s, NOW, NOW.plus(Duration.ofHours(12)), ZONE, 10);
         assertEquals(LocalDateTime.of(2026, 9, 23, 12, 30).atZone(ZONE).toInstant(), next.get(0));
         assertEquals("Cada 4 h desde las 00:30, lun, mar, mie, jue, vie", Schedules.describe(s));
+    }
+
+    @Test void enablingVerificationDoesNotCertifyEarlierBackup() {
+        var s = weekly("ALTA");
+        var e = current(new Execution("old", s.id(), s.name(), "db1", "Laboratorio", "BACKUP", "FULL", "MANUAL", null,
+            NOW.minusSeconds(90).toString(), NOW.minusSeconds(60).toString(), "EXITOSO", 0, "ok", s.destination(), List.of(), List.of(), "h"), s);
+        var changed = s.withVerifyAfter(true);
+        assertTrue(codes(Alerts.evaluate(input(changed, List.of(e), Set.of(), null))).contains("SIN_VERIFICAR"));
+        assertFalse(ExecutionEvidence.verified(e, List.of(e)));
+    }
+
+    @Test void changingScopeDoesNotReuseEarlierSuccess() {
+        var s = weekly("ALTA");
+        var e = current(new Execution("old", s.id(), s.name(), "db1", "Laboratorio", "BACKUP", "FULL", "MANUAL", null,
+            NOW.minusSeconds(90).toString(), NOW.minusSeconds(60).toString(), "EXITOSO", 0, "ok", s.destination(), List.of(), List.of(), "h"), s);
+        var changed = s.withArchivelogs(true);
+        assertTrue(codes(Alerts.evaluate(input(changed, List.of(e), Set.of(), null))).contains("EVIDENCIA_ANTERIOR"));
     }
 }

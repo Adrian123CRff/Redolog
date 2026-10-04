@@ -99,7 +99,7 @@
         <div class="form-row"><label>Tipo de respaldo<select name="method"><option value="FULL">Completo (FULL)</option><option value="LEVEL0">Incremental nivel 0</option><option value="LEVEL1">Incremental nivel 1 diferencial</option><option value="CUMULATIVE">Incremental nivel 1 acumulativo</option></select></label><label>Nivel<output id="level-output" class="readonly">&mdash;</output></label></div>
         <p id="method-hint" class="hint-block"></p>
         <figure id="chain" class="chain" aria-live="polite"></figure>
-        <div class="check-row"><label><input type="checkbox" name="compressed">Compresi&oacute;n (AS COMPRESSED BACKUPSET)</label><label><input type="checkbox" name="verifyAfter">Verificar al terminar (RESTORE &hellip; VALIDATE)</label></div>
+        <div class="check-row"><label><input type="checkbox" name="compressed">Compresi&oacute;n (AS COMPRESSED BACKUPSET)</label><label><input type="checkbox" name="verifyAfter">Verificar al terminar (VALIDATE BACKUPSET)</label></div>
       </fieldset>
       <fieldset class="step"><legend><span class="step-number">4</span>Cu&aacute;ndo respaldar</legend>
         <div class="form-row"><label>Fecha de inicio<input type="date" name="startDate"></label><label>Ventana de respaldo (min)<input type="number" name="windowMinutes" min="5" max="1440" placeholder="60"></label></div>

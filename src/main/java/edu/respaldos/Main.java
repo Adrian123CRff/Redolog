@@ -33,7 +33,7 @@ public final class Main {
                 "FULL", true, false, null, "DIARIA", null, List.of("13:00", "15:00", "18:00", "21:00"), null, 30, Models.DEFAULT_DESTINATION));
         }
         var service = new BackupService(catalog, runtime, simulation ? simulated : new Rman());
-        var server = HttpServer.create(new InetSocketAddress(simulation ? "0.0.0.0" : "127.0.0.1", port), 0);
+        var server = HttpServer.create(new InetSocketAddress(simulation ? System.getProperty("app.host", "0.0.0.0") : "127.0.0.1", port), 0);
         var httpPool = Executors.newFixedThreadPool(8); server.setExecutor(httpPool);
         String origin = "http://127.0.0.1:" + port;
         server.createContext("/", exchange -> {

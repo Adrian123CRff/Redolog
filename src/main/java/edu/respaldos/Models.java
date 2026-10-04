@@ -14,7 +14,7 @@ public final class Models {
     public static final List<String> DAYS = List.of("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN");
     public static final String DEFAULT_DESTINATION = "/opt/oracle/backup";
 
-    /** Objetivo de antigüedad máxima del último respaldo correcto (RPO) según la prioridad, en horas. */
+    /** Umbral de antiguedad del respaldo; por si solo no demuestra el RPO recuperable. */
     public static int rpoHours(String priority) {
         return switch (priority) { case "ALTA" -> 24; case "MEDIA" -> 72; default -> 168; };
     }
@@ -135,7 +135,14 @@ public final class Models {
     public record Execution(String id, String strategyId, String strategyName, String databaseId, String databaseName,
                             String operation, String backupType, String source, String plannedAt, String startedAt,
                             String finishedAt, String status, Integer exitCode, String message, String destination,
-                            List<String> pieces, List<String> details, String scriptHash) {
+                            List<String> pieces, List<String> details, String scriptHash, Evidence evidence) {
+        public Execution(String id, String strategyId, String strategyName, String databaseId, String databaseName,
+                         String operation, String backupType, String source, String plannedAt, String startedAt,
+                         String finishedAt, String status, Integer exitCode, String message, String destination,
+                         List<String> pieces, List<String> details, String scriptHash) {
+            this(id, strategyId, strategyName, databaseId, databaseName, operation, backupType, source, plannedAt,
+                startedAt, finishedAt, status, exitCode, message, destination, pieces, details, scriptHash, null);
+        }
         public Execution {
             // Estados usados antes del enunciado.
             status = switch (status == null ? "" : status) {
@@ -146,14 +153,29 @@ public final class Models {
             };
             pieces = pieces == null ? List.of() : List.copyOf(pieces);
             details = details == null ? List.of() : List.copyOf(details);
+            evidence = evidence == null ? new Evidence(null, List.of(), List.of(), null, false) : evidence;
         }
 
         public Execution finish(String status, Integer code, String message, List<String> pieces, List<String> details) {
             return new Execution(id, strategyId, strategyName, databaseId, databaseName, operation, backupType, source, plannedAt,
-                startedAt, java.time.Instant.now().toString(), status, code, message, destination, pieces, details, scriptHash);
+                startedAt, java.time.Instant.now().toString(), status, code, message, destination, pieces, details, scriptHash, evidence);
+        }
+
+        public Execution withEvidence(Evidence value) {
+            return new Execution(id, strategyId, strategyName, databaseId, databaseName, operation, backupType, source, plannedAt,
+                startedAt, finishedAt, status, exitCode, message, destination, pieces, details, scriptHash, value);
         }
 
         public boolean succeeded() { return status.equals("EXITOSO") || status.equals("CON_ADVERTENCIAS"); }
+    }
+
+    /** Las ejecuciones antiguas se conservan sin atribuirles una verificacion que no registraron. */
+    public record Evidence(String coverageHash, List<String> handles, List<Long> backupSets, String verifies, boolean verified) {
+        public Evidence {
+            handles = handles == null ? List.of() : List.copyOf(handles);
+            backupSets = backupSets == null ? List.of() : List.copyOf(backupSets);
+        }
+        public Evidence verified(boolean value) { return new Evidence(coverageHash, handles, backupSets, verifies, value); }
     }
 
     public record Approval(String strategyId, String scriptHash, String approvedAt, String approvedBy) {}

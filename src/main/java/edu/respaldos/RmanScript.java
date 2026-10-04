@@ -20,6 +20,9 @@ public final class RmanScript {
         comment(script, "Base: " + db.name() + " (" + db.container() + ") | Prioridad: " + s.priority());
         comment(script, "Que: " + what(s) + " | Como: " + how(s));
         comment(script, "Destino: " + s.destination() + " (DISK)");
+        comment(script, "Politica v2: " + s.startDate() + " | " + s.frequency() + " | " + s.days() + " | " + s.times()
+            + " | intervalo=" + s.intervalHours() + " | ventana=" + s.windowMinutes() + " | activa=" + s.enabled());
+        comment(script, "Responsable: " + s.responsible() + " | Descripcion: " + s.description());
         script.append("RUN {\n");
         script.append("  ALLOCATE CHANNEL d1 DEVICE TYPE DISK FORMAT '").append(s.destination()).append("/%d_%T_%U.bkp';\n");
         if (s.backsUpData()) script.append("  BACKUP ").append(level(s)).append(options).append(target(s)).append(";\n");
@@ -44,6 +47,23 @@ public final class RmanScript {
         if (s.controlfile()) script.append("RESTORE CONTROLFILE VALIDATE;\n");
         if (s.spfile()) script.append("RESTORE SPFILE VALIDATE;\n");
         return script.append("EXIT;\n").toString();
+    }
+
+    /** Solo esta variante se usa para certificar una ejecucion concreta. */
+    public static String validateSets(Collection<Long> keys) {
+        Models.require(keys != null && !keys.isEmpty(), "No hay conjuntos identificados para verificar.");
+        var script = new StringBuilder("# Verificacion de conjuntos de una ejecucion concreta\n");
+        for (Long key : new TreeSet<>(keys)) {
+            Models.require(key != null && key > 0, "Clave de conjunto RMAN no valida.");
+            script.append("VALIDATE BACKUPSET ").append(key).append(";\n");
+        }
+        return script.append("EXIT;\n").toString();
+    }
+
+    public static String coverageHash(Strategy s, Database db) {
+        return hash(db.id() + "|" + db.container() + "|" + s.scope() + "|" + new TreeSet<>(s.tablespaces()) + "|"
+            + s.datafiles() + "|" + s.method() + "|" + s.archivelogs() + "|" + s.controlfile() + "|" + s.spfile()
+            + "|" + s.destination());
     }
 
     static String target(Strategy s) {
@@ -115,19 +135,22 @@ public final class RmanScript {
         if (List.of("LEVEL1", "CUMULATIVE").contains(s.method()))
             issues.add(new Issue("INFORMATIVA", "NIVEL1", "Un incremental nivel 1 parte de un nivel 0 previo del mismo alcance; un respaldo FULL no sirve como base. Si no hay nivel 0, RMAN copia todos los bloques usados desde la creacion del datafile y lo registra como nivel 1."));
         if (st == null) {
-            issues.add(new Issue("ADVERTENCIA", "SIN_COMPROBAR", "La base no se ha comprobado: no se pudo validar el modo de archivado, los tablespaces ni el espacio disponible."));
+            issues.add(new Issue("ERROR", "SIN_COMPROBAR", "Comprueba la base antes de aprobar: aun no se conoce su estado."));
             return issues;
         }
         if (!st.reachable()) {
-            issues.add(new Issue("ADVERTENCIA", "SIN_CONEXION", "La ultima comprobacion no pudo conectar con la base: " + st.message()));
+            issues.add(new Issue("ERROR", "SIN_CONEXION", "La ultima comprobacion no pudo conectar con la base: " + st.message()));
             return issues;
         }
+        if (!st.rmanAvailable()) issues.add(new Issue("ERROR", "SIN_RMAN", "RMAN no esta disponible en el servidor."));
+        if (!List.of("ARCHIVELOG", "NOARCHIVELOG").contains(Objects.toString(st.logMode(), "")))
+            issues.add(new Issue("ERROR", "MODO_DESCONOCIDO", "No se pudo determinar el modo de archivado."));
         if ("NOARCHIVELOG".equals(st.logMode())) {
             issues.add(new Issue("ADVERTENCIA", "NOARCHIVELOG", "La base de datos se encuentra en modo NOARCHIVELOG. Las posibilidades de recuperacion son mas limitadas. Revise la estrategia de respaldo y los requerimientos de recuperacion antes de continuar."));
             if (s.archivelogs())
                 issues.add(new Issue("ERROR", "ARCHIVELOG_SIN_MODO", "La estrategia incluye archived redo logs, pero la base no los genera (NOARCHIVELOG). Quite esa opcion."));
             if (s.backsUpData() && "READ WRITE".equals(st.openMode()))
-                issues.add(new Issue("ADVERTENCIA", "EN_LINEA_NOARCHIVELOG", "Con la base abierta en NOARCHIVELOG RMAN no puede respaldar datafiles en linea (ORA-19602). Se requiere un respaldo consistente con la base en MOUNT, decision que queda a cargo del administrador."));
+                issues.add(new Issue("ERROR", "EN_LINEA_NOARCHIVELOG", "Con la base abierta en NOARCHIVELOG RMAN no puede respaldar datafiles en linea (ORA-19602). Se requiere un respaldo consistente con la base en MOUNT, decision que queda a cargo del administrador."));
         } else if ("ARCHIVELOG".equals(st.logMode())) {
             issues.add(new Issue("INFORMATIVA", "ARCHIVELOG", "La base esta en ARCHIVELOG: admite respaldos en linea y recuperacion hasta un punto en el tiempo."));
             if (s.backsUpData() && !s.archivelogs())

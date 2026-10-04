@@ -74,6 +74,28 @@ public class Rman {
         return command(List.of("docker", "exec", "-i", "-u", "oracle", "-e", "NLS_LANG=AMERICAN_AMERICA.AL32UTF8", db.container(), "rman", "target", "/"), script, log, timeout);
     }
 
+    /** Resuelve los conjuntos usando las piezas, nunca el TAG compartido por una estrategia. */
+    public List<Long> backupSets(Database db, List<String> handles, Path log) throws Exception {
+        Models.require(!handles.isEmpty(), "RMAN no informo piezas para identificar los conjuntos.");
+        var keys = new TreeSet<Long>();
+        // Consultas individuales evitan el limite de elementos IN y la truncacion de una salida extensa.
+        int index = 0;
+        for (String handle : new LinkedHashSet<>(handles)) {
+            Models.require(!handle.contains("\n") && !handle.contains("\r"), "Pieza RMAN no valida.");
+            String sql = "whenever sqlerror exit failure\nwhenever oserror exit failure\nset define off\nset pages 0 feedback off heading off lines 200 trimspool on\n"
+                + "select 'SET|'||s.recid from v$backup_set s join v$backup_piece p on p.set_stamp=s.set_stamp and p.set_count=s.set_count "
+                + "where p.handle='" + handle.replace("'", "''") + "' and p.status='A' and p.deleted='NO';\nexit;\n";
+            var result = command(List.of("docker", "exec", "-i", "-u", "oracle", db.container(), "sqlplus", "-s", "/", "as", "sysdba"),
+                sql, log.resolveSibling(log.getFileName() + "-" + index++), Duration.ofSeconds(30));
+            Models.require(successful(result), "No se pudo consultar el conjunto de " + handle);
+            var found = result.output().lines().map(String::trim).filter(l -> l.matches("SET\\|[0-9]+"))
+                .map(l -> Long.parseLong(l.substring(4))).distinct().toList();
+            Models.require(found.size() == 1, "La pieza no identifica un conjunto disponible unico: " + handle);
+            keys.add(found.get(0));
+        }
+        return List.copyOf(keys);
+    }
+
     /** Comprueba en el servidor Oracle que cada pieza reportada por RMAN existe, y obtiene su tamano. */
     public FileCheck checkFiles(Database db, List<String> files, Path log) throws Exception {
         if (files.isEmpty()) return new FileCheck(Map.of(), List.of(), true);

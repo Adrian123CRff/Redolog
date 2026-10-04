@@ -73,7 +73,8 @@ public final class BackupService implements AutoCloseable {
 
     public synchronized Approval approve(String strategyId, String approvedBy) throws Exception {
         var s = catalog.strategy(strategyId);
-        var errors = RmanScript.check(s, catalog.status(s.databaseId()).orElse(null)).stream().filter(i -> i.level().equals("ERROR")).toList();
+        Models.require(!active.containsKey(s.databaseId()), "Espera a que termine la ejecucion antes de aprobar.");
+        var errors = RmanScript.check(s, diagnose(s.databaseId())).stream().filter(i -> i.level().equals("ERROR")).toList();
         if (!errors.isEmpty()) throw new IllegalArgumentException("No se puede aprobar: " + errors.get(0).message());
         String who = approvedBy == null || approvedBy.isBlank() ? Optional.ofNullable(s.responsible()).orElse("Administrador") : approvedBy.trim();
         Models.require(who.length() <= 80, "Nombre de aprobador demasiado largo.");
@@ -113,13 +114,8 @@ public final class BackupService implements AutoCloseable {
         if (!s.enabled() || s.times().isEmpty() || !approved(s)) return;
         var job = JobBuilder.newJob(ScheduledBackup.class).withIdentity(s.id()).usingJobData("strategyId", s.id()).storeDurably().build();
         scheduler.addJob(job, true);
-        var start = Date.from(Schedules.startsAt(s, ZONE_ID));
-        int i = 0;
-        for (String expression : Schedules.cron(s)) {
-            scheduler.scheduleJob(TriggerBuilder.newTrigger().withIdentity(s.id() + "_" + i++).forJob(job).startAt(start)
-                .withSchedule(CronScheduleBuilder.cronSchedule(expression).inTimeZone(TimeZone.getTimeZone(ZONE_ID))
-                    .withMisfireHandlingInstructionDoNothing()).build());
-        }
+        scheduler.addCalendar(s.id(), Schedules.calendar(s, ZONE_ID), true, true);
+        for (var trigger : Schedules.triggers(s, ZONE_ID)) scheduler.scheduleJob(trigger);
     }
 
     public static final class ScheduledBackup implements Job {
@@ -136,16 +132,22 @@ public final class BackupService implements AutoCloseable {
     public synchronized String run(String strategyId, String operation, String source, String planned) throws Exception {
         Models.require(List.of("BACKUP", "VALIDATE").contains(operation), "Operacion no valida.");
         var s = catalog.strategy(strategyId); var db = catalog.database(s.databaseId());
-        String script = operation.equals("BACKUP") ? RmanScript.backup(s, db) : RmanScript.validate(s);
+        String coverage = RmanScript.coverageHash(s, db);
+        var target = operation.equals("VALIDATE") ? ExecutionEvidence.current(catalog.executions(), s, coverage).stream()
+            .filter(e -> e.operation().equals("BACKUP") && e.succeeded() && !e.evidence().backupSets().isEmpty()).findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("No hay un respaldo de este alcance con conjuntos identificados. Ejecuta uno nuevo; el historial anterior se conserva.")) : null;
+        String script = operation.equals("BACKUP") ? RmanScript.backup(s, db) : RmanScript.validateSets(target.evidence().backupSets());
         if (operation.equals("BACKUP") && !approved(s)) {
             Models.require(!source.equals("MANUAL"), "Revisa y aprueba el script antes de ejecutarlo.");
             throw new IllegalStateException("Script no aprobado.");
         }
         String id = UUID.randomUUID().toString();
         String occurrence = source.equals("HORARIO") ? s.id() + "|" + planned : null;
-        String type = operation.equals("BACKUP") ? RmanScript.how(s) + " | " + RmanScript.what(s) : "Verificacion RESTORE ... VALIDATE | " + RmanScript.what(s);
+        String type = operation.equals("BACKUP") ? RmanScript.how(s) + " | " + RmanScript.what(s) : "Verificacion VALIDATE BACKUPSET | " + RmanScript.what(s);
         var execution = new Execution(id, s.id(), s.name(), db.id(), db.name(), operation, type, source, planned, Instant.now().toString(), null,
-            "EJECUTANDO", null, "RMAN en ejecucion.", s.destination(), List.of(), List.of(), RmanScript.hash(script));
+            "EJECUTANDO", null, "Validando antes de ejecutar RMAN.", s.destination(), List.of(), List.of(), RmanScript.hash(script),
+            new Evidence(coverage, target == null ? List.of() : target.evidence().handles(),
+                target == null ? List.of() : target.evidence().backupSets(), target == null ? null : target.id(), false));
         if (active.containsKey(db.id())) {
             if (!source.equals("HORARIO")) throw new IllegalStateException("Esta base tiene una ejecucion activa o sin cierre confirmado.");
             catalog.insert(execution.finish("OMITIDO", null, "Otra ejecucion ocupaba esta base. No se inicio RMAN.", List.of(), List.of()), occurrence);
@@ -159,11 +161,23 @@ public final class BackupService implements AutoCloseable {
         workers.submit(() -> {
             boolean uncertain = false;
             try {
+                var status = diagnose(db.id());
+                var errors = operation.equals("BACKUP") ? RmanScript.check(s, status).stream().filter(i -> i.level().equals("ERROR")).toList()
+                    : !status.reachable() || !status.rmanAvailable() ? List.of(new Issue("ERROR", "SIN_CONEXION", "Oracle o RMAN no estan disponibles.")) : List.<Issue>of();
+                if (!errors.isEmpty()) {
+                    catalog.update(execution.finish("FALLIDO", null, "Validacion previa: " + errors.get(0).message(), List.of(), errors.stream().map(Issue::message).toList()));
+                    return;
+                }
+                if (target != null) {
+                    var currentKeys = rman.backupSets(db, target.evidence().handles(), dir.resolve("sets-check.log"));
+                    Models.require(new TreeSet<>(currentKeys).equals(new TreeSet<>(target.evidence().backupSets())), "El catalogo RMAN cambio: los conjuntos ya no corresponden al respaldo elegido.");
+                }
                 var outcome = evaluate(s, db, operation, execution, rman.execute(db, script, dir.resolve("output.log"), Duration.ofHours(4)), dir);
                 uncertain = outcome.status().equals("INCIERTO");
-                catalog.update(outcome);
+                try { catalog.update(outcome); }
+                catch (Exception persistenceError) { uncertain = true; throw persistenceError; }
             } catch (Exception e) {
-                uncertain = e instanceof InterruptedException;
+                uncertain = uncertain || e instanceof InterruptedException;
                 try { catalog.update(execution.finish(uncertain ? "INCIERTO" : "FALLIDO", null, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), List.of(), List.of())); }
                 catch (Exception persistenceError) { uncertain = true; System.err.println("No se pudo guardar el resultado de " + id); }
             } finally { if (!uncertain) active.remove(db.id(), id); }
@@ -186,8 +200,8 @@ public final class BackupService implements AutoCloseable {
         }
         var details = new ArrayList<String>(Rman.warnings(result.output()));
         if (operation.equals("VALIDATE"))
-            return e.finish(details.isEmpty() ? "EXITOSO" : "CON_ADVERTENCIAS", result.code(),
-                "RMAN comprobo la disponibilidad (CROSSCHECK) y la validez (RESTORE ... VALIDATE) de los respaldos. No sustituye una prueba de recuperacion real.", List.of(), details);
+            return e.withEvidence(e.evidence().verified(details.isEmpty())).finish(details.isEmpty() ? "EXITOSO" : "CON_ADVERTENCIAS", result.code(),
+                "RMAN leyo los conjuntos del respaldo " + e.evidence().verifies() + ". No sustituye una prueba de recuperacion real.", List.of(), details);
 
         var pieces = Rman.pieces(result.output());
         var files = rman.checkFiles(db, pieces, dir.resolve("files.log"));
@@ -197,18 +211,34 @@ public final class BackupService implements AutoCloseable {
         if (!files.checked()) details.add("No se pudo comprobar la existencia de las piezas en el servidor.");
         if (files.checked() && !files.missing().isEmpty())
             return e.finish("FALLIDO", result.code(), "RMAN termino, pero faltan " + files.missing().size() + " archivo(s) de respaldo en el destino.", pieces, concat(details, files.missing().stream().map(f -> "No existe: " + f).toList()));
+        if (files.existing().values().stream().anyMatch(size -> size <= 0))
+            return e.finish("FALLIDO", result.code(), "Hay piezas vacias; no se considera un respaldo correcto.", pieces, details);
+        List<Long> sets = List.of();
+        try {
+            Models.require(!result.output().startsWith("[Fragmento final"), "El registro esta truncado: no se puede identificar la totalidad de las piezas.");
+            sets = rman.backupSets(db, pieces, dir.resolve("sets.log"));
+        } catch (Exception lookupError) {
+            if (lookupError instanceof InterruptedException) throw lookupError;
+            details.add("Conjuntos no identificados: " + lookupError.getMessage());
+        }
+        e = e.withEvidence(new Evidence(e.evidence().coverageHash(), pieces, sets, null, false));
         long minutes = Duration.between(Instant.parse(e.startedAt()), Instant.now()).toMinutes();
         if (s.windowMinutes() != null && minutes > s.windowMinutes()) details.add("La ejecucion duro " + minutes + " min y excedio la ventana de " + s.windowMinutes() + " min.");
 
         if (s.verifyAfter()) {
-            String verify = RmanScript.validate(s);
+            if (sets.isEmpty()) return e.finish("FALLIDO", result.code(), "El respaldo se genero, pero no se pudieron identificar sus conjuntos para verificarlo.", evidence, details);
+            String verify = RmanScript.validateSets(sets);
             Files.writeString(dir.resolve("verify.rman"), verify);
             var check = rman.execute(db, verify, dir.resolve("verify.log"), Duration.ofHours(2));
+            if (check.timedOut()) return e.finish("INCIERTO", null, "La verificacion no confirmo su final. Comprueba RMAN antes de liberar la base.", evidence, details);
             if (!Rman.successful(check)) {
                 var verr = Rman.errors(check.output());
-                return e.finish("FALLIDO", check.code(), "El respaldo se genero, pero la verificacion RESTORE ... VALIDATE fallo" + (verr.isEmpty() ? "." : ": " + verr.get(0)), evidence, concat(details, verr));
+                return e.finish("FALLIDO", check.code(), "El respaldo se genero, pero VALIDATE BACKUPSET fallo" + (verr.isEmpty() ? "." : ": " + verr.get(0)), evidence, concat(details, verr));
             }
-            details.add("Verificacion posterior correcta: CROSSCHECK y RESTORE ... VALIDATE sin errores.");
+            var warnings = Rman.warnings(check.output());
+            details.addAll(warnings);
+            e = e.withEvidence(e.evidence().verified(warnings.isEmpty()));
+            if (warnings.isEmpty()) details.add("Verificacion posterior correcta: conjuntos " + sets + " leidos por VALIDATE BACKUPSET.");
         }
         boolean warned = details.stream().anyMatch(d -> !d.startsWith("Verificacion posterior correcta"));
         return e.finish(warned ? "CON_ADVERTENCIAS" : "EXITOSO", result.code(),
@@ -280,6 +310,11 @@ public final class BackupService implements AutoCloseable {
             view.put("scheduled", scheduled);
             view.put("nextRun", next == null ? null : next.toString());
             view.put("rpoHours", Models.rpoHours(s.priority()));
+            String coverage = db == null ? "" : RmanScript.coverageHash(s, db);
+            var current = ExecutionEvidence.current(executions, s, coverage);
+            view.put("coverageHash", coverage);
+            view.put("verified", current.stream().filter(e -> e.operation().equals("BACKUP") && e.succeeded()).findFirst()
+                .map(e -> ExecutionEvidence.verified(e, current)).orElse(false));
             views.add(view);
         }
         var alerts = Alerts.evaluate(new Alerts.Input(databases, statuses, strategies, approvals,
