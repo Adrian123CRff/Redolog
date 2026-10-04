@@ -106,4 +106,50 @@ class AlertsTest {
         var changed = s.withArchivelogs(true);
         assertTrue(codes(Alerts.evaluate(input(changed, List.of(e), Set.of(), null))).contains("EVIDENCIA_ANTERIOR"));
     }
+
+    static Strategy manual(boolean enabled, String start) {
+        return new Strategy("s1", "Manual", "Prueba", "db1", "Tester", "ALTA", enabled, "DATABASE", null, null,
+            false, false, false, "FULL", false, false, start, "DIARIA", null, List.of(), null, 5, null);
+    }
+
+    static Execution backup(Strategy s, Instant finish, long seconds) {
+        return current(new Execution("manual", s.id(), s.name(), "db1", "Laboratorio", "BACKUP", "FULL", "MANUAL", null,
+            finish.minusSeconds(seconds).toString(), finish.toString(), "EXITOSO", 0, "ok", s.destination(), List.of(), List.of(), "h"), s);
+    }
+
+    @Test void staleManualAndInactiveBackupsRemainVisibleWithoutApproval() {
+        for (boolean enabled : List.of(true, false)) {
+            var s = manual(enabled, "2026-09-01");
+            var old = backup(s, NOW.minus(Duration.ofHours(24)).minusSeconds(1), 30);
+            var alerts = codes(Alerts.evaluate(input(s, List.of(old), Set.of(), null)));
+            assertTrue(alerts.contains("SIN_RESPALDO_RECIENTE"));
+            assertFalse(alerts.contains("NO_EJECUTADA"));
+            assertTrue(codes(Alerts.evaluate(input(s, List.of(old), Set.of(), approval(s, NOW)))).contains("SIN_RESPALDO_RECIENTE"));
+        }
+    }
+
+    @Test void noEvidenceIsFlaggedAfterStartButNotBeforeStart() {
+        assertTrue(codes(Alerts.evaluate(input(manual(false, "2026-09-01"), List.of(), Set.of(), null))).contains("SIN_RESPALDO_RECIENTE"));
+        assertFalse(codes(Alerts.evaluate(input(manual(false, "2100-01-01"), List.of(), Set.of(), null))).contains("SIN_RESPALDO_RECIENTE"));
+    }
+
+    @Test void exactFreshnessBoundaryAndManualWindow() {
+        var s = manual(false, "2026-09-01");
+        var atLimit = backup(s, NOW.minus(Duration.ofHours(24)), 300);
+        var codes = codes(Alerts.evaluate(input(s, List.of(atLimit), Set.of(), null)));
+        assertFalse(codes.contains("SIN_RESPALDO_RECIENTE"));
+        assertFalse(codes.contains("VENTANA_EXCEDIDA"));
+        assertTrue(codes(Alerts.evaluate(input(s, List.of(backup(s, NOW, 301)), Set.of(), null))).contains("VENTANA_EXCEDIDA"));
+    }
+
+    @Test void spaceIssuesAppearInMonitor() {
+        var s = weekly("ALTA");
+        var in = input(s, List.of(), Set.of(), null);
+        for (long free : List.of(0L, 50_000_000L)) {
+            var st = RmanScriptTest.status("ARCHIVELOG", free);
+            var alerts = Alerts.evaluate(new Alerts.Input(in.databases(), Map.of("db1", st), in.strategies(), in.approvals(),
+                in.scriptOf(), in.executions(), in.occurrences(), in.active(), NOW, ZONE));
+            assertTrue(codes(alerts).contains(free == 0 ? "ESPACIO_AGOTADO" : "ESTIMACION_PARCIAL"));
+        }
+    }
 }

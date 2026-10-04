@@ -58,11 +58,12 @@ public final class Alerts {
         for (var issue : RmanScript.check(s, st)) {
             switch (issue.code()) {
                 case "SIN_RESPONSABLE", "SIN_DESCRIPCION" -> alerts.add(new Alert("ADVERTENCIA", "INCOMPLETA", n + ": configuracion incompleta", issue.message(), s.databaseId(), s.id(), "EDITAR", "Completar"));
-                case "TABLESPACE_INEXISTENTE", "DATAFILE_INEXISTENTE", "DESTINO_INEXISTENTE", "ARCHIVELOG_SIN_MODO",
+                case "TABLESPACE_INEXISTENTE", "DATAFILE_INEXISTENTE", "DESTINO_INEXISTENTE", "ESPACIO_AGOTADO", "ARCHIVELOG_SIN_MODO",
                      "SIN_COMPROBAR", "SIN_CONEXION", "SIN_RMAN", "MODO_DESCONOCIDO", "EN_LINEA_NOARCHIVELOG" ->
                     alerts.add(new Alert("ALERTA", issue.code(), n + ": configuracion invalida", issue.message(), s.databaseId(), s.id(), "EDITAR", "Corregir"));
                 case "FRECUENCIA_INSUFICIENTE" -> alerts.add(new Alert("ADVERTENCIA", issue.code(), n + ": frecuencia insuficiente para su prioridad", issue.message(), s.databaseId(), s.id(), "EDITAR", "Ajustar horario"));
                 case "ESPACIO_INSUFICIENTE" -> alerts.add(new Alert("ADVERTENCIA", issue.code(), n + ": espacio insuficiente en destino", issue.message(), s.databaseId(), s.id(), null, null));
+                case "ESTIMACION_PARCIAL", "ESPACIO_DESCONOCIDO" -> alerts.add(new Alert(issue.level(), issue.code(), n + ": espacio pendiente de confirmar", issue.message(), s.databaseId(), s.id(), null, null));
                 case "SIN_ARCHIVED_LOGS" -> alerts.add(new Alert("ADVERTENCIA", issue.code(), n + ": sin archived redo logs disponibles", issue.message(), s.databaseId(), s.id(), null, null));
                 case "INCLUIR_ARCHIVELOGS" -> { if (!s.priority().equals("BAJA"))
                     alerts.add(new Alert("RECOMENDACION", issue.code(), n + ": incorporar archived redo logs", issue.message(), s.databaseId(), s.id(), "AGREGAR_ARCHIVELOGS", "Aplicar recomendacion")); }
@@ -98,26 +99,28 @@ public final class Alerts {
                 alerts.add(new Alert("ALERTA", "NO_EJECUTADA", n + ": " + missed.size() + (missed.size() == 1 ? " respaldo programado no se ejecuto" : " respaldos programados no se ejecutaron"),
                     "Ultimo caso: " + local(missed.get(missed.size() - 1), in.zone()) + ". Revisa que la aplicacion estuviera en ejecucion y la base libre.", s.databaseId(), s.id(), "EJECUTAR", "Ejecutar ahora"));
 
-            // Sin respaldo reciente segun el objetivo de la prioridad (la frecuencia se valida en RmanScript.check).
-            int rpo = Models.rpoHours(s.priority());
-            var lastOk = backups.stream().filter(Execution::succeeded).findFirst();
-            Instant reference = lastOk.map(e -> Instant.parse(e.finishedAt())).orElse(max(Instant.parse(approval.approvedAt()), Schedules.startsAt(s, in.zone())));
-            long hours = Duration.between(reference, in.now()).toHours();
-            if (hours > rpo)
-                alerts.add(new Alert("ALERTA", "SIN_RESPALDO_RECIENTE", n + ": sin respaldo reciente",
-                    (lastOk.isPresent() ? "El ultimo respaldo correcto tiene " + hours + " h" : "No hay respaldos correctos desde hace " + hours + " h") + "; objetivo de prioridad " + s.priority().toLowerCase() + ": " + rpo + " h.", s.databaseId(), s.id(), "EJECUTAR", "Ejecutar ahora"));
-
-            // Ventana de respaldo excedida.
-            if (s.windowMinutes() != null && !backups.isEmpty() && backups.get(0).finishedAt() != null) {
-                long minutes = Duration.between(Instant.parse(backups.get(0).startedAt()), Instant.parse(backups.get(0).finishedAt())).toMinutes();
-                if (minutes > s.windowMinutes())
-                    alerts.add(new Alert("ADVERTENCIA", "VENTANA_EXCEDIDA", n + ": ventana de respaldo excedida", "La ultima ejecucion duro " + minutes + " min; la ventana es de " + s.windowMinutes() + " min.", s.databaseId(), s.id(), null, null));
-            }
         }
 
-        if (List.of("LEVEL1", "CUMULATIVE").contains(s.method()) && in.strategies().stream().noneMatch(o -> o.databaseId().equals(s.databaseId())
-                && o.method().equals("LEVEL0") && o.enabled() && (o.scope().equals("DATABASE") || (o.scope().equals(s.scope()) && o.tablespaces().containsAll(s.tablespaces()) && o.datafiles().containsAll(s.datafiles())))))
-            alerts.add(new Alert("RECOMENDACION", "SIN_NIVEL0", n + ": falta la base de la cadena incremental", "Programa una estrategia incremental nivel 0 que cubra el mismo alcance. Un respaldo FULL no sirve como base de un nivel 1.", s.databaseId(), s.id(), null, null));
+        // La antiguedad de la evidencia no depende del horario ni se reinicia al aprobar.
+        int rpo = Models.rpoHours(s.priority());
+        var lastOk = backups.stream().filter(Execution::succeeded).filter(e -> e.finishedAt() != null).findFirst();
+        var age = lastOk.map(e -> Duration.between(Instant.parse(e.finishedAt()), in.now()));
+        if (age.map(d -> d.compareTo(Duration.ofHours(rpo)) > 0).orElse(!Schedules.startsAt(s, in.zone()).isAfter(in.now())))
+            alerts.add(new Alert("ALERTA", "SIN_RESPALDO_RECIENTE", n + ": sin respaldo reciente",
+                (age.isPresent() ? "Antiguedad del ultimo respaldo correcto: " + age.get().toMinutes() + " min"
+                    : "No hay un respaldo correcto registrado para el alcance actual")
+                    + "; objetivo de prioridad " + s.priority().toLowerCase() + ": " + rpo + " h.", s.databaseId(), s.id(), "EJECUTAR", "Ejecutar ahora"));
+
+        if (s.windowMinutes() != null && !backups.isEmpty() && backups.get(0).finishedAt() != null) {
+            var elapsed = Duration.between(Instant.parse(backups.get(0).startedAt()), Instant.parse(backups.get(0).finishedAt()));
+            if (elapsed.compareTo(Duration.ofMinutes(s.windowMinutes())) > 0)
+                alerts.add(new Alert("ADVERTENCIA", "VENTANA_EXCEDIDA", n + ": duracion maxima excedida", "La ultima ejecucion duro " + elapsed.toSeconds() + " s; la duracion maxima advertida es de " + s.windowMinutes() + " min. No se detiene RMAN automaticamente.", s.databaseId(), s.id(), null, null));
+        }
+
+        if (List.of("LEVEL1", "CUMULATIVE").contains(s.method()) && db.map(d ->
+                !ExecutionEvidence.hasVerifiedLevel0(in.strategies(), d, st, s, in.executions())).orElse(true))
+            alerts.add(new Alert("RECOMENDACION", "SIN_NIVEL0", n + ": sin nivel 0 verificado en el historial",
+                "Ejecuta y verifica un nivel 0 que cubra los datafiles actuales. Configurar una estrategia o tener un FULL no acredita esa base. La evidencia historica no garantiza la disponibilidad actual de toda la cadena.", s.databaseId(), s.id(), null, null));
 
         // Verificacion de recuperabilidad: un respaldo que no se ha leido no esta comprobado.
         var lastBackupOk = backups.stream().filter(Execution::succeeded).findFirst();

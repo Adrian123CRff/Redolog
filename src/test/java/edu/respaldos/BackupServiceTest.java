@@ -25,12 +25,14 @@ class BackupServiceTest {
     static class Stub extends SimulatedRman {
         boolean invalid, unreachable, backupTimeout, verifyTimeout, verifyFailure, changedSets;
         String fault = "";
+        boolean fullDisk;
         final List<String> scripts = new CopyOnWriteArrayList<>();
         Stub() { super(0); }
         @Override public DatabaseStatus diagnose(Database db, Path path, Collection<String> destinations) {
             var s = super.diagnose(db, path, destinations);
             return new DatabaseStatus(db.id(), s.checkedAt(), !unreachable, true, s.version(), s.dbName(), s.openMode(), s.logMode(),
-                s.pdbs(), s.datafiles(), s.archivedLogs(), invalid ? Map.of(Models.DEFAULT_DESTINATION, -1L) : s.freeKb(), "prueba");
+                s.pdbs(), s.datafiles(), s.archivedLogs(), invalid ? Map.of(Models.DEFAULT_DESTINATION, -1L)
+                    : fullDisk ? Map.of(Models.DEFAULT_DESTINATION, 0L) : s.freeKb(), "prueba");
         }
         @Override public Result execute(Database db, String script, Path log, Duration timeout) throws Exception {
             scripts.add(script);
@@ -96,6 +98,38 @@ class BackupServiceTest {
         assertEquals("FALLIDO", e.status());
         assertTrue(e.message().startsWith("Validacion previa"));
         assertTrue(rman.scripts.isEmpty(), "no debe despachar RMAN");
+        assertFalse(Files.exists(dir.resolve("executions").resolve(e.id()).resolve("script.rman")));
+    }
+
+    @Test void previewRequiresSuccessfulSemanticValidation() throws Exception {
+        var unknown = service.preview(strategy);
+        assertEquals(false, unknown.get("valid"));
+        assertEquals("", unknown.get("script"));
+        assertEquals("", unknown.get("hash"));
+        assertEquals("", unknown.get("validateScript"));
+        service.diagnose(db.id());
+        var valid = service.preview(strategy);
+        assertEquals(true, valid.get("valid"));
+        assertEquals(RmanScript.backup(strategy, db), valid.get("script"));
+        var invalid = new Strategy("bad", "Objeto inexistente", null, db.id(), "Tester", "ALTA", false,
+            "DATAFILE", null, List.of(65533), false, false, false, "FULL", false, false,
+            "2100-01-01", "DIARIA", null, List.of(), null, null, null);
+        var blocked = service.preview(invalid);
+        assertEquals(false, blocked.get("valid"));
+        assertEquals("", blocked.get("script"));
+        assertTrue(catalog.approval(strategy.id()).isEmpty(), "previsualizar no aprueba");
+    }
+
+    @Test void zeroFreeSpaceRejectsApprovalAndDispatch() throws Exception {
+        rman.fullDisk = true;
+        assertThrows(IllegalArgumentException.class, () -> service.approve(strategy.id(), "Tester"));
+        rman.fullDisk = false;
+        service.approve(strategy.id(), "Tester");
+        rman.fullDisk = true;
+        var failed = run("BACKUP");
+        assertEquals("FALLIDO", failed.status());
+        assertTrue(rman.scripts.isEmpty());
+        assertFalse(Files.exists(dir.resolve("executions").resolve(failed.id()).resolve("script.rman")));
     }
 
     @Test void verifiesOnlySetsFromTheSelectedBackupAndLaterFailureIsVisible() throws Exception {
@@ -104,8 +138,10 @@ class BackupServiceTest {
         assertEquals("EXITOSO", backup.status());
         assertFalse(backup.evidence().backupSets().isEmpty());
         assertFalse(backup.evidence().verified());
+        assertFalse(backup.evidence().datafiles().isEmpty());
         var good = run("VALIDATE");
         assertEquals(backup.id(), good.evidence().verifies());
+        assertEquals(backup.evidence().datafiles(), good.evidence().datafiles());
         assertTrue(good.evidence().verified());
         assertEquals(RmanScript.validateSets(backup.evidence().backupSets()), rman.scripts.get(1));
         assertTrue(ExecutionEvidence.verified(backup, catalog.executions()));
@@ -193,6 +229,7 @@ class BackupServiceTest {
         service = new BackupService(catalog, dir, rman);
         assertTrue(service.approved(catalog.strategy(strategy.id())));
         assertTrue(catalog.execution(backup.id()).evidence().verified());
+        assertEquals(backup.evidence().datafiles(), catalog.execution(backup.id()).evidence().datafiles());
         assertTrue(((Map<?, ?>) service.state().get("active")).isEmpty());
         @SuppressWarnings("unchecked") var views = (List<Map<String, Object>>) service.state().get("strategies");
         assertEquals(true, views.getFirst().get("scheduled"));

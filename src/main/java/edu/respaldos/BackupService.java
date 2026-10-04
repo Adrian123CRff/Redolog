@@ -49,10 +49,12 @@ public final class BackupService implements AutoCloseable {
 
     public Map<String, Object> preview(Strategy s) throws Exception {
         var db = catalog.database(s.databaseId());
-        String script = RmanScript.backup(s, db);
+        var issues = RmanScript.check(s, catalog.status(db.id()).orElse(null));
+        boolean valid = issues.stream().noneMatch(i -> i.level().equals("ERROR"));
+        String script = valid ? RmanScript.backup(s, db) : "";
         var now = Instant.now();
-        return Map.of("script", script, "validateScript", RmanScript.validate(s), "hash", RmanScript.hash(script),
-            "issues", RmanScript.check(s, catalog.status(db.id()).orElse(null)), "schedule", Schedules.describe(s),
+        return Map.of("valid", valid, "script", script, "validateScript", valid ? RmanScript.validate(s) : "", "hash", valid ? RmanScript.hash(script) : "",
+            "issues", issues, "schedule", Schedules.describe(s),
             "nextRuns", s.times().isEmpty() ? List.of() : Schedules.occurrences(s, now, now.plus(Duration.ofDays(14)), ZONE_ID, 5).stream().map(Instant::toString).toList());
     }
 
@@ -136,7 +138,6 @@ public final class BackupService implements AutoCloseable {
         var target = operation.equals("VALIDATE") ? ExecutionEvidence.current(catalog.executions(), s, coverage).stream()
             .filter(e -> e.operation().equals("BACKUP") && e.succeeded() && !e.evidence().backupSets().isEmpty()).findFirst()
             .orElseThrow(() -> new IllegalArgumentException("No hay un respaldo de este alcance con conjuntos identificados. Ejecuta uno nuevo; el historial anterior se conserva.")) : null;
-        String script = operation.equals("BACKUP") ? RmanScript.backup(s, db) : RmanScript.validateSets(target.evidence().backupSets());
         if (operation.equals("BACKUP") && !approved(s)) {
             Models.require(!source.equals("MANUAL"), "Revisa y aprueba el script antes de ejecutarlo.");
             throw new IllegalStateException("Script no aprobado.");
@@ -145,9 +146,11 @@ public final class BackupService implements AutoCloseable {
         String occurrence = source.equals("HORARIO") ? s.id() + "|" + planned : null;
         String type = operation.equals("BACKUP") ? RmanScript.how(s) + " | " + RmanScript.what(s) : "Verificacion VALIDATE BACKUPSET | " + RmanScript.what(s);
         var execution = new Execution(id, s.id(), s.name(), db.id(), db.name(), operation, type, source, planned, Instant.now().toString(), null,
-            "EJECUTANDO", null, "Validando antes de ejecutar RMAN.", s.destination(), List.of(), List.of(), RmanScript.hash(script),
+            "EJECUTANDO", null, "Validando antes de ejecutar RMAN.", s.destination(), List.of(), List.of(),
+            target == null ? catalog.approval(s.id()).orElseThrow().scriptHash() : RmanScript.hash(RmanScript.validateSets(target.evidence().backupSets())),
             new Evidence(coverage, target == null ? List.of() : target.evidence().handles(),
-                target == null ? List.of() : target.evidence().backupSets(), target == null ? null : target.id(), false));
+                target == null ? List.of() : target.evidence().backupSets(), target == null ? null : target.id(), false,
+                target == null ? List.of() : target.evidence().datafiles()));
         if (active.containsKey(db.id())) {
             if (!source.equals("HORARIO")) throw new IllegalStateException("Esta base tiene una ejecucion activa o sin cierre confirmado.");
             catalog.insert(execution.finish("OMITIDO", null, "Otra ejecucion ocupaba esta base. No se inicio RMAN.", List.of(), List.of()), occurrence);
@@ -155,11 +158,11 @@ public final class BackupService implements AutoCloseable {
         }
         Path dir = runtime.resolve("executions").resolve(id);
         Files.createDirectories(dir);
-        Files.writeString(dir.resolve("script.rman"), script);
         if (!catalog.insert(execution, occurrence)) return "duplicada";
         active.put(db.id(), id);
         workers.submit(() -> {
             boolean uncertain = false;
+            var checkedExecution = execution;
             try {
                 var status = diagnose(db.id());
                 var errors = operation.equals("BACKUP") ? RmanScript.check(s, status).stream().filter(i -> i.level().equals("ERROR")).toList()
@@ -172,13 +175,19 @@ public final class BackupService implements AutoCloseable {
                     var currentKeys = rman.backupSets(db, target.evidence().handles(), dir.resolve("sets-check.log"));
                     Models.require(new TreeSet<>(currentKeys).equals(new TreeSet<>(target.evidence().backupSets())), "El catalogo RMAN cambio: los conjuntos ya no corresponden al respaldo elegido.");
                 }
-                var outcome = evaluate(s, db, operation, execution, rman.execute(db, script, dir.resolve("output.log"), Duration.ofHours(4)), dir);
+                String script = target == null ? RmanScript.backup(s, db) : RmanScript.validateSets(target.evidence().backupSets());
+                Models.require(RmanScript.hash(script).equals(execution.scriptHash()), "El script no corresponde a la aprobacion.");
+                if (target == null) checkedExecution = execution.withEvidence(new Evidence(coverage, List.of(), List.of(), null, false,
+                    RmanScript.selectedDatafiles(s, status)));
+                catalog.update(checkedExecution);
+                Files.writeString(dir.resolve("script.rman"), script);
+                var outcome = evaluate(s, db, operation, checkedExecution, rman.execute(db, script, dir.resolve("output.log"), Duration.ofHours(4)), dir);
                 uncertain = outcome.status().equals("INCIERTO");
                 try { catalog.update(outcome); }
                 catch (Exception persistenceError) { uncertain = true; throw persistenceError; }
             } catch (Exception e) {
                 uncertain = uncertain || e instanceof InterruptedException;
-                try { catalog.update(execution.finish(uncertain ? "INCIERTO" : "FALLIDO", null, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), List.of(), List.of())); }
+                try { catalog.update(checkedExecution.finish(uncertain ? "INCIERTO" : "FALLIDO", null, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), List.of(), List.of())); }
                 catch (Exception persistenceError) { uncertain = true; System.err.println("No se pudo guardar el resultado de " + id); }
             } finally { if (!uncertain) active.remove(db.id(), id); }
         });
@@ -187,7 +196,7 @@ public final class BackupService implements AutoCloseable {
 
     /**
      * Un codigo de salida 0 no basta (enunciado 14.7): se exigen las piezas en disco y, si la
-     * estrategia lo pide, una verificacion RESTORE ... VALIDATE posterior.
+     * estrategia lo pide, una verificacion VALIDATE BACKUPSET posterior.
      */
     private Execution evaluate(Strategy s, Database db, String operation, Execution e, Rman.Result result, Path dir) throws Exception {
         if (result.timedOut())
@@ -221,9 +230,7 @@ public final class BackupService implements AutoCloseable {
             if (lookupError instanceof InterruptedException) throw lookupError;
             details.add("Conjuntos no identificados: " + lookupError.getMessage());
         }
-        e = e.withEvidence(new Evidence(e.evidence().coverageHash(), pieces, sets, null, false));
-        long minutes = Duration.between(Instant.parse(e.startedAt()), Instant.now()).toMinutes();
-        if (s.windowMinutes() != null && minutes > s.windowMinutes()) details.add("La ejecucion duro " + minutes + " min y excedio la ventana de " + s.windowMinutes() + " min.");
+        e = e.withEvidence(new Evidence(e.evidence().coverageHash(), pieces, sets, null, false, e.evidence().datafiles()));
 
         if (s.verifyAfter()) {
             if (sets.isEmpty()) return e.finish("FALLIDO", result.code(), "El respaldo se genero, pero no se pudieron identificar sus conjuntos para verificarlo.", evidence, details);
@@ -240,6 +247,9 @@ public final class BackupService implements AutoCloseable {
             e = e.withEvidence(e.evidence().verified(warnings.isEmpty()));
             if (warnings.isEmpty()) details.add("Verificacion posterior correcta: conjuntos " + sets + " leidos por VALIDATE BACKUPSET.");
         }
+        var elapsed = Duration.between(Instant.parse(e.startedAt()), Instant.now());
+        if (s.windowMinutes() != null && elapsed.compareTo(Duration.ofMinutes(s.windowMinutes())) > 0)
+            details.add("La ejecucion, incluida la verificacion, duro " + elapsed.toSeconds() + " s y excedio la duracion maxima de " + s.windowMinutes() + " min.");
         boolean warned = details.stream().anyMatch(d -> !d.startsWith("Verificacion posterior correcta"));
         return e.finish(warned ? "CON_ADVERTENCIAS" : "EXITOSO", result.code(),
             (warned ? "Respaldo realizado con advertencias. " : "Respaldo realizado. ") + files.existing().size() + " pieza(s) comprobadas en " + s.destination() + ".", evidence, details);

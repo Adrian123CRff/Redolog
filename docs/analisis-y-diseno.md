@@ -167,7 +167,7 @@ Comportamiento de la herramienta (la herramienta nunca cambia el modo):
 | Verificacion | VALIDATE BACKUPSET por cada clave obtenida de las piezas de la ejecucion; no se certifica una ejecucion usando RESTORE VALIDATE generico |
 | Cuando | Cron para horas diarias/semanales; SimpleTrigger continuo para intervalos, con calendario de dias permitidos |
 
-Implementacion: RmanScript.backup, RmanScript.validate y Schedules.cron. La
+Implementacion: RmanScript.backup, RmanScript.validateSets y Schedules.triggers. La
 aprobacion guarda la huella SHA-256 del script; cualquier cambio la invalida.
 El script incluye como comentarios los datos de la politica y su horario. Una
 edicion del horario exige nueva aprobacion y reinicia el periodo de control de
@@ -176,11 +176,19 @@ omisiones; no se atribuyen faltas retroactivas a un horario recien modificado.
 Los intervalos se anclan a la fecha y hora iniciales. Cada N horas significa N
 horas transcurridas, incluso al cruzar medianoche. Los disparos que caen en dias
 excluidos se omiten sin reiniciar el intervalo. La ventana representa una duracion
-maxima advertida, no una franja obligatoria de inicio y fin.
+maxima advertida, no una franja obligatoria de inicio y fin. Incluye la verificacion
+posterior y no interrumpe RMAN; tampoco representa un tiempo de recuperacion garantizado.
 
-Antes de aprobar se actualiza el diagnostico. Antes de despachar cada respaldo se
+La vista previa valida contra el diagnostico disponible antes de construir el
+script: un ERROR devuelve valid=false, script y huella vacios. La interfaz descarta
+respuestas antiguas cuando se edita la configuracion. Antes de aprobar se actualiza
+el diagnostico. Antes de despachar cada respaldo se
 actualiza nuevamente y se bloquea si hay errores. Estas comprobaciones no cambian
-el modo de archivado ni el estado de apertura de Oracle.
+el modo de archivado ni el estado de apertura de Oracle. El archivo script.rman se
+materializa solo despues de superar la validacion previa. La representacion
+canonica interna sigue utilizandose para comparar la huella de las aprobaciones;
+no se expone como script validado cuando hay errores. RmanScript.validate es una
+referencia generica, no el mecanismo que certifica una ejecucion concreta.
 
 Flujo de construccion de una estrategia (seccion 8 del enunciado):
 
@@ -192,7 +200,7 @@ flowchart LR
     C --> D[Visualizacion]
     D --> E{Aprobacion del<br>administrador}
     E -- cambia la configuracion --> A
-    E -- aprobada --> F[Programacion<br>cron Quartz]
+    E -- aprobada --> F[Programacion Quartz<br>cron o intervalo continuo]
     F --> G[Ejecucion RMAN]
     G --> H[Evidencia: piezas en disco,<br>errores, estado]
     H --> I[Monitoreo y<br>control preventivo]
@@ -205,14 +213,33 @@ flowchart LR
 | --- | --- | --- | --- |
 | Estrategia sin programacion | Advertencia | Sin horarios | Disponibilidad |
 | Estrategia inactiva | Advertencia | Marcada inactiva | Disponibilidad |
-| Respaldo programado que no se ejecuto | Alerta | Ocurrencias cron sin ejecucion registrada, o ejecuciones omitidas | Disponibilidad |
+| Respaldo programado que no se ejecuto | Alerta | Ocurrencias cron o de intervalo sin ejecucion registrada, o ejecuciones omitidas | Disponibilidad |
 | Ejecucion fallida | Alerta | Ultima ejecucion fallida, con el error de RMAN | Disponibilidad e integridad |
-| Falta de espacio | Advertencia | df en el destino frente al tamano de los datafiles del alcance | Disponibilidad |
+| Falta de espacio | Error / advertencia | Cero KB bloquea todo alcance; se compara df con datafiles y se advierte que el volumen de componentes no esta estimado | Disponibilidad |
 | Ausencia de archived logs requeridos | Advertencia / error | Ninguna estrategia los respalda; se piden en NOARCHIVELOG; no hay disponibles | Integridad |
 | Base en NOARCHIVELOG | Advertencia | v$database.log_mode | Integridad |
-| Sin respaldo reciente | Alerta | Ultimo respaldo correcto mas antiguo que el objetivo de su prioridad | Disponibilidad |
+| Sin respaldo reciente | Alerta | Ultimo respaldo correcto mas antiguo que el objetivo; tambien aplica a manuales, inactivas y sin aprobar | Disponibilidad |
 | Configuracion incompleta | Advertencia / alerta | Sin responsable o descripcion; tablespace, datafile o destino inexistentes | Integridad |
 | Adicionales | Varios | Script sin aprobar, frecuencia insuficiente, ventana excedida, nivel 1 sin nivel 0, respaldo sin verificar, ejecucion incierta | Ambos |
+
+Sin evidencia del alcance actual, se alerta desde la fecha de inicio; una fecha
+futura no se trata como vencida. Aprobar de nuevo no rejuvenece un respaldo. El
+control de omisiones del horario sigue contando desde la aprobacion correspondiente.
+
+SIN_NIVEL0 exige una ejecucion nivel 0 correcta, con piezas/conjuntos identificados,
+verificacion vigente y una lista de datafiles del diagnostico previo que incluya
+el alcance actual. Una verificacion posterior fallida invalida esa evidencia.
+Puede provenir de una estrategia manual o inactiva. Por prudencia se exige una
+sola copia que cubra todo el alcance, una estrategia aun registrada con cobertura
+coincidente y una lista no vacia: no se infiere cobertura para registros antiguos.
+La lista procede del diagnostico, no de un inventario completo de bloques RMAN;
+no detecta reutilizacion de IDs de datafiles, cambios de encarnacion ni borrado
+posterior de piezas. Esta regla no certifica toda la cadena de recuperacion.
+
+El calculo de espacio solo conoce el tamano de los datafiles y el espacio libre
+del destino en ese instante. Componentes, metadatos, compresion y cambios durante
+el respaldo impiden garantizar un tamano final. Nunca se presenta COMPONENTS
+como un respaldo de cero bytes ni se llena el disco para demostrar la alerta.
 
 ## Aporte de cada funcionalidad al control preventivo
 
@@ -238,7 +265,7 @@ flowchart TB
         Main[Main<br>HTTP + API JSON]
         Svc[BackupService<br>flujo y planificador Quartz]
         Script[RmanScript<br>script y validacion]
-        Sch[Schedules<br>cron]
+        Sch[Schedules<br>cron e intervalos]
         Al[Alerts<br>control preventivo]
         R[Rman<br>docker exec]
         Cat[(Catalog H2)]
@@ -262,7 +289,7 @@ flowchart TB
 | Main | Servidor HTTP, rutas /api, validacion de Host y Origin, eleccion del modo local o simulacion |
 | BackupService | Flujo: validar, aprobar, programar, ejecutar, evaluar evidencia, liberar bases, aplicar recomendaciones |
 | RmanScript | Construccion del script y validacion semantica (funcion pura) |
-| Schedules | "Cuando" como expresiones cron de Quartz y calculo de ocurrencias |
+| Schedules | "Cuando" como CronTrigger o SimpleTrigger continuo y calculo de ocurrencias |
 | Alerts | Reglas del control preventivo (funcion pura) |
 | Rman | docker exec de rman, sqlplus, stat y df; interpretacion de la salida |
 | SimulatedRman y Demo | Sustituto sin Oracle y datos de ejemplo para la demostracion publica |
@@ -277,7 +304,8 @@ Cada tabla H2 guarda el registro completo en JSON y lo indexa por su clave.
 Las relaciones FK del diagrama son conceptuales; no son restricciones fisicas
 sobre campos dentro del JSON. Las ejecuciones nuevas guardan evidencia estructurada:
 huella del alcance, rutas de piezas, claves de conjuntos, respaldo verificado y
-resultado de verificacion. El historial antiguo permanece sin certificacion retroactiva.
+resultado de verificacion y datafiles del diagnostico previo. El historial antiguo
+permanece sin atribuirle una lista de datafiles que no registro ni certificacion retroactiva.
 
 ```mermaid
 erDiagram

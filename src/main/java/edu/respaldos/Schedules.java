@@ -6,7 +6,7 @@ import java.util.*;
 import org.quartz.*;
 import org.quartz.impl.calendar.WeeklyCalendar;
 
-/** Traduce el "CUÁNDO" de una estrategia a expresiones cron de Quartz y calcula sus ocurrencias. */
+/** Traduce el "CUÁNDO" a disparadores cron o de intervalo continuo y calcula sus ocurrencias. */
 public final class Schedules {
     private Schedules() {}
     private static final Map<String, String> DAY_NAMES = Map.of("MON", "lun", "TUE", "mar", "WED", "mie", "THU", "jue", "FRI", "vie", "SAT", "sab", "SUN", "dom");
@@ -86,6 +86,6 @@ public final class Schedules {
             case "SEMANAL" -> "Semanal (" + days + ") a las " + String.join(", ", s.times());
             default -> "Diaria a las " + String.join(", ", s.times());
         };
-        return text + (s.windowMinutes() == null ? "" : " | ventana " + s.windowMinutes() + " min");
+        return text + (s.windowMinutes() == null ? "" : " | duracion maxima advertida " + s.windowMinutes() + " min");
     }
 }

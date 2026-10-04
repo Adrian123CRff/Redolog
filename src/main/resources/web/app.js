@@ -425,16 +425,27 @@ function renderTimes() {
 function renderIssues(target, issues) {
   $(target).innerHTML = issues.map(i => `<li class="${LEVEL[i.level].cls}">${levelBadge(i.level)}<span>${esc(i.message)}</span></li>`).join('') || '<li class="good-line">Sin observaciones.</li>';
 }
+let previewVersion = 0;
 function schedulePreview(delay = 250) {
   clearTimeout(previewTimer);
+  const version = ++previewVersion;
+  $('#live-script').textContent = 'Validación pendiente.';
+  $('#live-script').classList.add('stale');
+  $('#preview-hash').textContent = '';
+  $('#live-schedule').textContent = '';
+  $('#live-issues').replaceChildren();
   previewTimer = setTimeout(async () => {
     try {
       const result = await api('preview', {strategy: readStrategy()});
-      $('#live-script').textContent = result.script; $('#live-script').classList.remove('stale');
-      $('#preview-hash').textContent = 'huella ' + result.hash;
+      if (version !== previewVersion) return;
+      $('#live-script').textContent = result.valid ? result.script : 'Script bloqueado por errores de validación.';
+      $('#live-script').classList.toggle('stale', !result.valid);
+      $('#preview-hash').textContent = result.valid ? 'huella ' + result.hash : '';
       renderIssues('#live-issues', result.issues);
       $('#live-schedule').textContent = result.schedule + (result.nextRuns.length ? ' · próximas: ' + result.nextRuns.map(formatDate).join(', ') : '');
     } catch (error) {
+      if (version !== previewVersion) return;
+      $('#live-script').textContent = 'Script no disponible: validación pendiente.';
       $('#live-script').classList.add('stale');
       renderIssues('#live-issues', [{level: 'ERROR', message: error.message}]);
     }
@@ -447,18 +458,19 @@ async function openReview(id) {
   const v = view(id); if (!v) return;
   reviewId = id;
   const data = await api('preview', {strategy: v.strategy});
+  if (reviewId !== id) return;
+  const blocked = !data.valid;
   $('#review-title').textContent = 'Revisar script · ' + v.strategy.name;
   const approvedNow = v.approved && v.approval?.scriptHash === data.hash;
   $('#review-summary').innerHTML = `<b>Qué:</b> ${esc(v.what)} · <b>Cómo:</b> ${esc(v.how)} · <b>Cuándo:</b> ${esc(data.schedule)} · <b>Destino:</b> ${esc(v.strategy.destination)}`
-    + (approvedNow ? `<br>${icon('badge-check')} Aprobado por ${esc(v.approval.approvedBy)} el ${formatDate(v.approval.approvedAt)}.` : v.approval ? '<br>La configuración cambió después de la última aprobación.' : '');
+    + (blocked ? '<br>Revisión bloqueada por errores de validación.' : approvedNow ? `<br>${icon('badge-check')} Aprobado por ${esc(v.approval.approvedBy)} el ${formatDate(v.approval.approvedAt)}.` : v.approval ? '<br>La configuración cambió después de la última aprobación.' : '');
   renderIssues('#review-issues', data.issues);
-  $('#review-script').textContent = data.script;
+  $('#review-script').textContent = blocked ? 'Script bloqueado por errores de validación.' : data.script;
   $('#review-hash').textContent = data.hash;
   $('#review-form').elements.approvedBy.value = v.approval?.approvedBy || v.strategy.responsible || '';
-  const blocked = data.issues.some(i => i.level === 'ERROR');
   $('#approve-button').disabled = blocked;
   $('#review-error').textContent = blocked ? 'Corrige los errores antes de aprobar.' : '';
-  document.querySelectorAll('#review-dialog .flow li').forEach((li, i) => { li.className = i < 3 || (approvedNow && i === 3) ? 'done' : (approvedNow ? i === 4 : i === 3) ? 'current' : ''; });
+  document.querySelectorAll('#review-dialog .flow li').forEach((li, i) => { li.className = blocked ? (i === 0 ? 'done' : i === 1 ? 'current' : '') : i < 3 || (approvedNow && i === 3) ? 'done' : (approvedNow ? i === 4 : i === 3) ? 'current' : ''; });
   if (!$('#review-dialog').open) $('#review-dialog').showModal();
   icons();
 }

@@ -105,6 +105,35 @@ class RmanScriptTest {
         assertEquals(RmanScript.hash(RmanScript.backup(a, DB)), RmanScript.hash(RmanScript.backup(a, DB)));
     }
 
+    @Test void exhaustedSpaceBlocksDataAndComponents() {
+        for (String scope : List.of("DATABASE", "COMPONENTS")) {
+            var s = strategy(scope, null, null, "FULL", true, true, true, false);
+            assertTrue(RmanScript.check(s, status("ARCHIVELOG", 0)).stream()
+                .anyMatch(i -> i.code().equals("ESPACIO_AGOTADO") && i.level().equals("ERROR")));
+        }
+        assertEquals("0 KB", RmanScript.human(0));
+    }
+
+    @Test void componentSizeIsUnknownRatherThanZeroBackupEstimate() {
+        for (String scope : List.of("DATABASE", "COMPONENTS")) {
+            var s = strategy(scope, null, null, "FULL", true, true, true, false);
+            assertTrue(RmanScript.check(s, status("ARCHIVELOG", 50_000_000)).stream()
+                .anyMatch(i -> i.code().equals("ESTIMACION_PARCIAL")));
+        }
+        var dataOnly = strategy("DATABASE", null, null, "FULL", false, false, false, false);
+        assertFalse(RmanScript.check(dataOnly, status("ARCHIVELOG", 50_000_000)).stream()
+            .anyMatch(i -> i.code().equals("ESTIMACION_PARCIAL")));
+    }
+
+    @Test void legacyEvidenceDoesNotInventDatafileSnapshot() throws Exception {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        var evidence = json.readValue("{\"coverageHash\":\"old\",\"handles\":[\"x\"],\"backupSets\":[1],\"verified\":true}", Evidence.class);
+        assertTrue(evidence.verified());
+        assertTrue(evidence.datafiles().isEmpty());
+        var withFiles = new Evidence("new", List.of("x"), List.of(1L), null, false, List.of(13));
+        assertEquals(List.of(13), json.readValue(json.writeValueAsString(withFiles.verified(true)), Evidence.class).datafiles());
+    }
+
     @Test
     void rmanOutputParsing() {
         String out = """

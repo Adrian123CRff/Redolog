@@ -170,12 +170,16 @@ public final class Models {
     }
 
     /** Las ejecuciones antiguas se conservan sin atribuirles una verificacion que no registraron. */
-    public record Evidence(String coverageHash, List<String> handles, List<Long> backupSets, String verifies, boolean verified) {
+    public record Evidence(String coverageHash, List<String> handles, List<Long> backupSets, String verifies, boolean verified, List<Integer> datafiles) {
+        public Evidence(String coverageHash, List<String> handles, List<Long> backupSets, String verifies, boolean verified) {
+            this(coverageHash, handles, backupSets, verifies, verified, List.of());
+        }
         public Evidence {
             handles = handles == null ? List.of() : List.copyOf(handles);
             backupSets = backupSets == null ? List.of() : List.copyOf(backupSets);
+            datafiles = datafiles == null ? List.of() : List.copyOf(datafiles);
         }
-        public Evidence verified(boolean value) { return new Evidence(coverageHash, handles, backupSets, verifies, value); }
+        public Evidence verified(boolean value) { return new Evidence(coverageHash, handles, backupSets, verifies, value, datafiles); }
     }
 
     public record Approval(String strategyId, String scriptHash, String approvedAt, String approvedBy) {}

@@ -169,15 +169,20 @@ public final class RmanScript {
             issues.add(new Issue("INFORMATIVA", "ESPACIO_DESCONOCIDO", "No se conoce el espacio libre en " + s.destination() + ". Comprueba la base para medirlo."));
         else if (free < 0)
             issues.add(new Issue("ERROR", "DESTINO_INEXISTENTE", "El destino " + s.destination() + " no existe o no es accesible en el servidor Oracle."));
+        else if (free == 0)
+            issues.add(new Issue("ERROR", "ESPACIO_AGOTADO", "El destino no tiene espacio libre (0 KB). Libera espacio antes de aprobar o ejecutar."));
         else {
             long estimate = estimatedBytes(s, st);
             if (estimate > free * 1024)
-                issues.add(new Issue("ADVERTENCIA", "ESPACIO_INSUFICIENTE", "Espacio libre en destino: " + human(free * 1024) + "; tamano estimado sin compresion: " + human(estimate) + "."));
+                issues.add(new Issue("ADVERTENCIA", "ESPACIO_INSUFICIENTE", "Espacio libre en destino: " + human(free * 1024) + "; tamano de los datafiles sin compresion: " + human(estimate) + "."));
+            if (s.archivelogs() || s.controlfile() || s.spfile())
+                issues.add(new Issue("ADVERTENCIA", "ESTIMACION_PARCIAL", "Espacio libre: " + human(free * 1024)
+                    + ". El tamano de archived redo logs, control file y SPFILE no esta estimado; no se puede confirmar que todo el respaldo quepa."));
         }
         return issues;
     }
 
-    /** Estimacion conservadora: tamano de los datafiles del alcance (un nivel 1 suele ocupar mucho menos). */
+    /** Solo datafiles: excluye componentes, metadatos y variaciones durante la ejecucion. */
     public static long estimatedBytes(Strategy s, DatabaseStatus st) {
         return st.datafiles().stream().filter(d -> switch (s.scope()) {
             case "DATABASE" -> true;
@@ -188,9 +193,20 @@ public final class RmanScript {
     }
 
     public static String human(long bytes) {
+        if (bytes == 0) return "0 KB";
         if (bytes < 1024 * 1024) return Math.max(1, bytes / 1024) + " KB";
         if (bytes < 1024L * 1024 * 1024) return String.format(Locale.ROOT, "%.1f MB", bytes / 1048576.0);
         return String.format(Locale.ROOT, "%.1f GB", bytes / 1073741824.0);
+    }
+
+    public static List<Integer> selectedDatafiles(Strategy s, DatabaseStatus st) {
+        if (st == null) return List.of();
+        return st.datafiles().stream().filter(d -> switch (s.scope()) {
+            case "DATABASE" -> true;
+            case "TABLESPACE" -> s.tablespaces().contains(d.rmanTablespace());
+            case "DATAFILE" -> s.datafiles().contains(d.file());
+            default -> false;
+        }).map(Datafile::file).distinct().sorted().toList();
     }
 
     private static void comment(StringBuilder script, String text) {

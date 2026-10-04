@@ -1,6 +1,7 @@
 param(
     [string]$BaseUrl = 'http://127.0.0.1:8787',
-    [int]$TimeoutSeconds = 360
+    [int]$TimeoutSeconds = 360,
+    [ValidateSet('FULL', 'LEVEL0')][string]$Method = 'FULL'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,13 +57,14 @@ try {
         name="QA_LOCAL_$stamp"; description='Prueba no destructiva solicitada por el usuario; se desactiva al terminar.'
         databaseId=$db.id; responsible='Prueba local asistida'; priority='MEDIA'; enabled=$false
         scope='TABLESPACE'; tablespaces=@('FREEPDB1:LAB_DATOS'); datafiles=@()
-        archivelogs=$true; controlfile=$true; spfile=$true; method='FULL'; compressed=$true; verifyAfter=$true
+        archivelogs=$true; controlfile=$true; spfile=$true; method=$Method; compressed=$true; verifyAfter=$true
         startDate=$now.ToString('yyyy-MM-dd'); frequency='DIARIA'; days=@('MON','TUE','WED','THU','FRI','SAT','SUN')
         times=@(); intervalHours=$null; windowMinutes=5; destination='/opt/oracle/backup'
     }
     $strategy = (Api 'strategies' $draft).strategy
     $preview = Api 'preview' @{strategy=$strategy}
     Check 'Vista previa sin errores' (@($preview.issues | Where-Object level -eq 'ERROR').Count -eq 0) $preview
+    Check 'Vista previa validada y con huella' ($preview.valid -and $preview.script -match 'BACKUP' -and $preview.hash.Length -gt 0) $preview.hash
 
     $rejected = $false
     try { $null = Api 'run' @{strategyId=$strategy.id; operation='BACKUP'} }
@@ -76,6 +78,8 @@ try {
     try { $null = Api 'approve' @{strategyId=$strategy.id; approvedBy='Prueba local asistida'} }
     catch { $rejected = $_.ErrorDetails.Message -match 'destino|existe|accesible' }
     Check 'Destino inexistente impide aprobar' $rejected $strategy.destination
+    $blocked = Api 'preview' @{strategy=$strategy}
+    Check 'Destino invalido no genera script ni huella' (-not $blocked.valid -and $blocked.script -eq '' -and $blocked.hash -eq '' -and $blocked.validateScript -eq '') $blocked
     $strategy.destination = $validDestination
     $strategy = (Api 'strategies' $strategy).strategy
     $null = Api 'preview' @{strategy=$strategy}
@@ -87,6 +91,8 @@ try {
     $manual | ConvertTo-Json -Depth 25 | Set-Content (Join-Path $output 'respaldo-manual.json') -Encoding utf8
     Check 'Respaldo manual real exitoso' ($manual.execution.status -eq 'EXITOSO') $manual.execution
     Check 'Piezas y conjuntos identificados' ($manual.execution.pieces.Count -gt 0 -and $manual.execution.evidence.backupSets.Count -gt 0) $manual.execution.evidence
+    $expectedFiles = @($diagnostic.datafiles | Where-Object { $_.container -eq 'FREEPDB1' -and $_.tablespace -eq 'LAB_DATOS' } | ForEach-Object file | Sort-Object)
+    Check 'Datafiles del alcance guardados en evidencia' (($manual.execution.evidence.datafiles -join ',') -eq ($expectedFiles -join ',')) $manual.execution.evidence.datafiles
     Check 'Verificacion posterior real' ([bool]$manual.execution.evidence.verified -and $manual.verifyScript -match 'VALIDATE BACKUPSET' -and $manual.verifyLog -notmatch '\[SIMULACION\]') $manual.verifyLog
 
     $verificationId = (Api 'run' @{strategyId=$strategy.id; operation='VALIDATE'}).id
