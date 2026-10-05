@@ -28,6 +28,13 @@ integridad.
 
 No hace falta instalar Maven ni Oracle: el proyecto trae el Maven Wrapper y el
 script descarga la imagen oficial `container-registry.oracle.com/database/free`.
+En Windows esta fijada por digest a la imagen probada por el grupo, no a `latest`.
+El laboratorio probado es Linux/amd64 (equipos Windows Intel/AMD, Docker Desktop
+en modo de contenedores Linux); Windows ARM requiere validacion aparte.
+
+**Para los integrantes del grupo:** [guia de trabajo en Windows](docs/equipo-windows.md).
+Todos tienen la misma estructura inicial, pero datos, estrategias e historial
+independientes. GitHub no sincroniza las bases de datos.
 
 ## Instalacion (primera vez)
 
@@ -45,7 +52,7 @@ macOS o Linux:
     cd Redolog
     ./scripts/preparar-entorno.sh --iniciar
 
-El script hace, y se puede repetir sin riesgo:
+El script prepara el laboratorio y conserva los datos existentes:
 
 1. Comprueba Java 21+ y Docker.
 2. Crea el contenedor `rman-lab` (Oracle 26ai Free en ARCHIVELOG, puerto
@@ -55,7 +62,11 @@ El script hace, y se puede repetir sin riesgo:
    LAB_DEMO.PEDIDOS).
 4. Deja los archived logs y el autobackup del control file en almacenamiento
    persistente.
-5. Compila con `mvnw` y, con `-Iniciar`, abre http://127.0.0.1:8787.
+5. Compila con `mvnw` y, con `-Iniciar` en Windows, ejecuta la aplicacion en la
+   misma terminal. Abre http://127.0.0.1:8787 en tu navegador.
+
+En Windows se detiene si encuentra un contenedor ajeno, otra imagen en el
+laboratorio existente o un volumen sin contenedor. No los reemplaza ni borra.
 
 Los respaldos quedan en `runtime/backups` dentro del proyecto. La carpeta
 `runtime/` no se sube a Git: cada integrante tiene su propio catalogo e historial.
@@ -67,7 +78,7 @@ Los respaldos quedan en `runtime/backups` dentro del proyecto. La carpeta
 O, si el contenedor ya esta creado:
 
     docker start rman-lab
-    java -jar target/gestor-rman-0.1.0.jar
+    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.port=8787" -jar "target/gestor-rman-0.1.0.jar"
 
 Ejecutalo desde la carpeta del proyecto. Primeros pasos en la aplicacion:
 
