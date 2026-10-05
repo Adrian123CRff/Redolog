@@ -333,8 +333,15 @@ function renderDatabases() {
     const mode = !st ? badge('Sin comprobar') : !st.reachable ? badge('Sin conexión', 'bad') : badge(st.logMode, st.logMode === 'ARCHIVELOG' ? 'good' : 'warn');
     return `<article class="database-item"><div class="database-head">${icon('database')}<div><strong>${esc(d.name)}</strong><small>Contenedor ${esc(d.container)}</small></div>${mode}</div>
       <div class="database-info">${body}</div><small class="muted">${st ? 'Comprobada ' + formatDate(st.checkedAt) : ''}</small>
-      <button class="secondary" data-action="diagnose" data-id="${esc(d.id)}">${icon('plug-zap')}Comprobar conexión</button></article>`;
+      <small class="muted">${mailLine(d)}</small>
+      <button class="secondary" data-action="diagnose" data-id="${esc(d.id)}">${icon('plug-zap')}Comprobar conexión</button>
+      ${d.dbaEmail && state.mailConfigured ? `<button class="secondary" data-action="mailtest" data-id="${esc(d.id)}">${icon('mail')}Enviar correo de prueba</button>` : ''}</article>`;
   }).join('');
+}
+
+function mailLine(d) {
+  if (!d.dbaEmail) return 'Sin correo del DBA: los fallos no se avisan por correo.';
+  return 'Alertas a ' + esc(d.dbaEmail) + (state.mailConfigured ? '' : ' (el servidor SMTP no está configurado)');
 }
 
 // ---------------- CONSTRUCTOR ----------------
@@ -596,7 +603,7 @@ $('#review-form').addEventListener('submit', async e => {
 });
 $('#database-form').addEventListener('submit', async e => {
   e.preventDefault(); const f = e.currentTarget, b = f.querySelector('[type=submit]'); b.disabled = true;
-  try { await api('databases', {name: f.elements.name.value, container: f.elements.container.value}); $('#database-dialog').close(); toast('Base registrada. Comprueba la conexión para validar sus estrategias.'); await refresh(); }
+  try { await api('databases', {name: f.elements.name.value, container: f.elements.container.value, dbaEmail: f.elements.dbaEmail.value}); $('#database-dialog').close(); toast('Base registrada. Comprueba la conexión para validar sus estrategias.'); await refresh(); }
   catch (error) { $('#db-error').textContent = error.message; }
   finally { b.disabled = false; }
 });
@@ -614,6 +621,7 @@ document.body.addEventListener('click', async e => {
     if (action === 'validate') await runOperation(id, 'VALIDATE');
     if (action === 'detail') await openExecution(id);
     if (action === 'diagnose') await diagnose(id, b);
+    if (action === 'mailtest') toast('Correo de prueba enviado a ' + (await api('mail/test', {databaseId: id})).sentTo + '.');
   } catch (error) { toast(error.message, true); }
   finally { b.disabled = false; }
 });
@@ -634,7 +642,7 @@ $('#timeline').addEventListener('keydown', e => { const m = e.target.closest('.m
 [['#show-evidence', 'evidence'], ['#show-script', 'script'], ['#show-log', 'log'], ['#show-verify', 'verify']].forEach(([sel, mode]) => $(sel).addEventListener('click', () => { detail.mode = mode; showDetail(); }));
 $('#download-detail').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([detailText()], {type: 'text/plain;charset=utf-8'}));
-  const a = document.createElement('a'); a.href = url; a.download = {script: 'estrategia.rman', log: 'ejecucion.log', verify: 'verificacion.log', evidence: 'evidencia.txt'}[detail.mode]; a.click();
+  const a = document.createElement('a'); a.href = url; a.download = {script: 'estrategia.rma', log: 'ejecucion.log', verify: 'verificacion.log', evidence: 'evidencia.txt'}[detail.mode]; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 window.addEventListener('resize', () => { clearTimeout(renderTimeline.t); renderTimeline.t = setTimeout(renderTimeline, 150); });

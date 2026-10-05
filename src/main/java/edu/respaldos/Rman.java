@@ -10,6 +10,8 @@ import java.util.regex.Pattern;
 
 /** Ejecuta RMAN y SQL*Plus dentro del contenedor Oracle e interpreta su salida. */
 public class Rman {
+    /** Extension de los scripts RMAN que genera la herramienta. */
+    public static final String SCRIPT_EXT = ".rma";
     private static final Pattern ERRORS = Pattern.compile("(?m)^\\s*(?:ORA-[0-9]{5}|RMAN-00569)");
     private static final Pattern ERROR_LINES = Pattern.compile("(?m)^\\s*((?:RMAN|ORA)-\\d{5}:.*)$");
     private static final Pattern WARNING_LINES = Pattern.compile("(?m)^\\s*(RMAN-\\d{5}: WARNING.*)$");
@@ -38,6 +40,12 @@ public class Rman {
             while (buffer.hasRemaining() && channel.read(buffer) > 0) {}
             return (size > max ? "[Fragmento final del registro]\n" : "") + new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8);
         }
+    }
+
+    /** Lee script o verify de una ejecucion; las ejecuciones anteriores se guardaron como .rman. */
+    public static String readScript(Path dir, String base) throws Exception {
+        Path current = dir.resolve(base + SCRIPT_EXT);
+        return readTail(Files.exists(current) ? current : dir.resolve(base + ".rman"), 100_000);
     }
 
     public static boolean successful(Result r) { return !r.timedOut() && r.code() == 0 && !ERRORS.matcher(r.output()).find(); }

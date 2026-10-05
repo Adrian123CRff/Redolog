@@ -79,11 +79,11 @@ final class Demo {
                 code == 0 ? rman.backupSets(db, Rman.pieces(out.toString()), runtime.resolve("demo-sets.log")) : List.of(), null, false));
         Path dir = runtime.resolve("executions").resolve(id);
         Files.createDirectories(dir);
-        Files.writeString(dir.resolve("script.rman"), script);
+        Files.writeString(dir.resolve("script" + Rman.SCRIPT_EXT), script);
         Files.writeString(dir.resolve("output.log"), out);
         if (code == 0 && s.verifyAfter()) {
             String verify = RmanScript.validateSets(e.evidence().backupSets());
-            Files.writeString(dir.resolve("verify.rman"), verify);
+            Files.writeString(dir.resolve("verify" + Rman.SCRIPT_EXT), verify);
             var verification = new StringBuilder(SimulatedRman.MARK).append('\n');
             int verifiedCode = rman.output(db, verify, at.plusSeconds(seconds), verification, null);
             Files.writeString(dir.resolve("verify.log"), verification);

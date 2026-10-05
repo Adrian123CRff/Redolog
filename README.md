@@ -76,6 +76,44 @@ Ejecutalo desde la carpeta del proyecto. Primeros pasos en la aplicacion:
 2. Estrategias: editar EST001 o crear una nueva, revisar el script y aprobarlo.
 3. Monitor: seguir la linea de tiempo y atender el control preventivo.
 
+## Correo de alertas al DBA
+
+Cuando una ejecucion termina Fallida, Incierta o Con advertencias, la herramienta
+envia un correo al DBA de esa base con la estrategia, el error de RMAN y la ruta
+del registro. Cada envio (o su omision) queda en la bitacora.
+
+1. En Bases de datos, registra la base con su "Correo del DBA".
+2. Define el servidor SMTP con variables de entorno antes de iniciar (la
+   contrasena no se guarda en el catalogo ni en el repositorio):
+
+        GESTOR_SMTP_HOST=smtp.gmail.com
+        GESTOR_SMTP_PORT=587               (opcional, 587 por defecto)
+        GESTOR_SMTP_USER=cuenta@gmail.com
+        GESTOR_SMTP_PASSWORD=contrasena-de-aplicacion
+        GESTOR_SMTP_FROM=cuenta@gmail.com  (opcional, usa el usuario)
+        GESTOR_SMTP_STARTTLS=true          (opcional, true por defecto)
+
+3. En la tarjeta de la base, "Enviar correo de prueba" confirma que llega.
+
+Sin `GESTOR_SMTP_HOST` el correo queda desactivado y la interfaz lo indica. El
+modo simulacion nunca envia correos.
+
+## Scripts .rma
+
+Cada estrategia deja en `runtime/scripts/` un archivo `<ESTRATEGIA>-<contenedor>.rma`
+con el script RMAN vigente, que se puede revisar o ejecutar a mano. Cada ejecucion
+conserva ademas su propia copia (`script.rma`, `verify.rma`) como evidencia.
+
+## Modo robot (sin interfaz web)
+
+    java -jar target/gestor-rman-0.1.0.jar --robot
+
+Arranca solo el planificador y los avisos, sin servidor web, para dejarlo en segundo
+plano. Para que arranque con Windows, crea una tarea en el Programador de tareas
+("Al iniciar sesion") que ejecute ese comando desde la carpeta del proyecto. El
+robot y la interfaz comparten el catalogo, por lo que no pueden estar abiertos a la
+vez: cierra el robot antes de abrir la interfaz y viceversa.
+
 ## Modo simulacion (sin Oracle)
 
 Para probar la interfaz en un equipo sin Docker, o para la demostracion publica:

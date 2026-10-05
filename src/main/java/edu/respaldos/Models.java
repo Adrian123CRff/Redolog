@@ -19,12 +19,17 @@ public final class Models {
         return switch (priority) { case "ALTA" -> 24; case "MEDIA" -> 72; default -> 168; };
     }
 
-    public record Database(String id, String name, String container) {
+    /** dbaEmail: destinatario de las alertas de esta base; es opcional y los catalogos antiguos no lo tienen. */
+    public record Database(String id, String name, String container, String dbaEmail) {
+        public Database(String id, String name, String container) { this(id, name, container, null); }
+
         public Database {
             id = id == null || id.isBlank() ? UUID.randomUUID().toString() : id;
             require(name != null && !name.isBlank() && name.length() <= 80, "Nombre de base requerido (hasta 80 caracteres).");
             require(container != null && container.matches("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}"), "Nombre de contenedor no valido.");
             name = name.trim();
+            dbaEmail = dbaEmail == null || dbaEmail.isBlank() ? null : dbaEmail.trim();
+            require(dbaEmail == null || (dbaEmail.length() <= 120 && dbaEmail.matches("[^\\s@]+@[^\\s@]+\\.[^\\s@]+")), "Correo del DBA no valido.");
         }
     }
 

@@ -18,12 +18,17 @@ public final class BackupService implements AutoCloseable {
     final Catalog catalog;
     final Path runtime;
     private final Rman rman;
+    private final Notifier notifier;
+    private final ScriptStore scripts;
     private final Scheduler scheduler;
     private final ExecutorService workers = Executors.newFixedThreadPool(3);
     private final Map<String, String> active = new ConcurrentHashMap<>();
 
-    public BackupService(Catalog catalog, Path runtime, Rman rman) throws Exception {
-        this.catalog = catalog; this.runtime = runtime; this.rman = rman;
+    public BackupService(Catalog catalog, Path runtime, Rman rman) throws Exception { this(catalog, runtime, rman, Notifier.NONE); }
+
+    public BackupService(Catalog catalog, Path runtime, Rman rman, Notifier notifier) throws Exception {
+        this.catalog = catalog; this.runtime = runtime; this.rman = rman; this.notifier = notifier;
+        this.scripts = new ScriptStore(runtime.resolve("scripts"));
         // Un proceso Java detenido no puede saber si el RMAN que lanzo tambien se detuvo.
         for (var e : catalog.executions()) {
             if (List.of("EJECUTANDO", "INCIERTO").contains(e.status())) {
@@ -90,7 +95,7 @@ public final class BackupService implements AutoCloseable {
     public synchronized void delete(String id) throws Exception {
         var s = catalog.strategy(id);
         Models.require(!active.containsKey(s.databaseId()), "Espera a que termine la ejecucion.");
-        scheduler.deleteJob(new JobKey(id)); catalog.deleteStrategy(id);
+        scheduler.deleteJob(new JobKey(id)); scripts.delete(s, catalog.database(s.databaseId())); catalog.deleteStrategy(id);
         event("ESTRATEGIA_ELIMINADA", s, s.name() + " | el historial se conserva");
     }
 
@@ -113,6 +118,8 @@ public final class BackupService implements AutoCloseable {
 
     private void schedule(Strategy s) throws Exception {
         scheduler.deleteJob(new JobKey(s.id()));
+        var db = catalog.database(s.databaseId());
+        scripts.write(s, db, RmanScript.backup(s, db)); // el .rma de la estrategia refleja siempre su configuracion vigente
         if (!s.enabled() || s.times().isEmpty() || !approved(s)) return;
         var job = JobBuilder.newJob(ScheduledBackup.class).withIdentity(s.id()).usingJobData("strategyId", s.id()).storeDurably().build();
         scheduler.addJob(job, true);
@@ -168,7 +175,7 @@ public final class BackupService implements AutoCloseable {
                 var errors = operation.equals("BACKUP") ? RmanScript.check(s, status).stream().filter(i -> i.level().equals("ERROR")).toList()
                     : !status.reachable() || !status.rmanAvailable() ? List.of(new Issue("ERROR", "SIN_CONEXION", "Oracle o RMAN no estan disponibles.")) : List.<Issue>of();
                 if (!errors.isEmpty()) {
-                    catalog.update(execution.finish("FALLIDO", null, "Validacion previa: " + errors.get(0).message(), List.of(), errors.stream().map(Issue::message).toList()));
+                    record(execution.finish("FALLIDO", null, "Validacion previa: " + errors.get(0).message(), List.of(), errors.stream().map(Issue::message).toList()));
                     return;
                 }
                 if (target != null) {
@@ -180,18 +187,25 @@ public final class BackupService implements AutoCloseable {
                 if (target == null) checkedExecution = execution.withEvidence(new Evidence(coverage, List.of(), List.of(), null, false,
                     RmanScript.selectedDatafiles(s, status)));
                 catalog.update(checkedExecution);
-                Files.writeString(dir.resolve("script.rman"), script);
+                Files.writeString(dir.resolve("script" + Rman.SCRIPT_EXT), script);
                 var outcome = evaluate(s, db, operation, checkedExecution, rman.execute(db, script, dir.resolve("output.log"), Duration.ofHours(4)), dir);
                 uncertain = outcome.status().equals("INCIERTO");
-                try { catalog.update(outcome); }
+                try { record(outcome); }
                 catch (Exception persistenceError) { uncertain = true; throw persistenceError; }
             } catch (Exception e) {
                 uncertain = uncertain || e instanceof InterruptedException;
-                try { catalog.update(checkedExecution.finish(uncertain ? "INCIERTO" : "FALLIDO", null, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), List.of(), List.of())); }
+                try { record(checkedExecution.finish(uncertain ? "INCIERTO" : "FALLIDO", null, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), List.of(), List.of())); }
                 catch (Exception persistenceError) { uncertain = true; System.err.println("No se pudo guardar el resultado de " + id); }
             } finally { if (!uncertain) active.remove(db.id(), id); }
         });
         return id;
+    }
+
+    /** Guarda el resultado final de una ejecucion y la comunica al notificador; un aviso fallido nunca cambia el resultado. */
+    private void record(Execution finished) throws Exception {
+        catalog.update(finished);
+        try { notifier.notifyFinished(finished); }
+        catch (RuntimeException e) { System.err.println("No se pudo avisar la ejecucion " + finished.id() + ": " + e); }
     }
 
     /**
@@ -235,7 +249,7 @@ public final class BackupService implements AutoCloseable {
         if (s.verifyAfter()) {
             if (sets.isEmpty()) return e.finish("FALLIDO", result.code(), "El respaldo se genero, pero no se pudieron identificar sus conjuntos para verificarlo.", evidence, details);
             String verify = RmanScript.validateSets(sets);
-            Files.writeString(dir.resolve("verify.rman"), verify);
+            Files.writeString(dir.resolve("verify" + Rman.SCRIPT_EXT), verify);
             var check = rman.execute(db, verify, dir.resolve("verify.log"), Duration.ofHours(2));
             if (check.timedOut()) return e.finish("INCIERTO", null, "La verificacion no confirmo su final. Comprueba RMAN antes de liberar la base.", evidence, details);
             if (!Rman.successful(check)) {
@@ -356,5 +370,5 @@ public final class BackupService implements AutoCloseable {
         return lines.length == 0 ? "sin salida" : lines[lines.length - 1].trim();
     }
 
-    public void close() throws Exception { scheduler.shutdown(false); workers.shutdown(); }
+    public void close() throws Exception { scheduler.shutdown(false); workers.shutdown(); notifier.close(); }
 }

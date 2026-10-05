@@ -19,6 +19,7 @@ class BackupServiceTest {
     Connection keepOpen;
     BackupService service;
     final Stub rman = new Stub();
+    final List<Execution> notified = new CopyOnWriteArrayList<>();
     final Database db = new Database("db", "Prueba aislada", "not-oracle");
     Strategy strategy;
 
@@ -62,7 +63,7 @@ class BackupServiceTest {
         catalog.save(db);
         strategy = new Strategy("s", "Prueba", "Datos de prueba", db.id(), "Tester", "ALTA", true,
             "DATABASE", null, null, true, true, true, "FULL", false, false, "2100-01-01", "DIARIA", null, List.of("02:00"), null, 60, null);
-        service = new BackupService(catalog, dir, rman);
+        service = new BackupService(catalog, dir, rman, notified::add);
         service.save(strategy);
     }
 
@@ -98,7 +99,7 @@ class BackupServiceTest {
         assertEquals("FALLIDO", e.status());
         assertTrue(e.message().startsWith("Validacion previa"));
         assertTrue(rman.scripts.isEmpty(), "no debe despachar RMAN");
-        assertFalse(Files.exists(dir.resolve("executions").resolve(e.id()).resolve("script.rman")));
+        assertFalse(Files.exists(dir.resolve("executions").resolve(e.id()).resolve("script.rma")));
     }
 
     @Test void previewRequiresSuccessfulSemanticValidation() throws Exception {
@@ -129,7 +130,7 @@ class BackupServiceTest {
         var failed = run("BACKUP");
         assertEquals("FALLIDO", failed.status());
         assertTrue(rman.scripts.isEmpty());
-        assertFalse(Files.exists(dir.resolve("executions").resolve(failed.id()).resolve("script.rman")));
+        assertFalse(Files.exists(dir.resolve("executions").resolve(failed.id()).resolve("script.rma")));
     }
 
     @Test void verifiesOnlySetsFromTheSelectedBackupAndLaterFailureIsVisible() throws Exception {
@@ -190,7 +191,7 @@ class BackupServiceTest {
         var e = run("BACKUP");
         assertEquals("EXITOSO", e.status());
         assertTrue(e.evidence().verified());
-        assertEquals(RmanScript.validateSets(e.evidence().backupSets()), Files.readString(dir.resolve("executions").resolve(e.id()).resolve("verify.rman")));
+        assertEquals(RmanScript.validateSets(e.evidence().backupSets()), Files.readString(dir.resolve("executions").resolve(e.id()).resolve("verify.rma")));
     }
 
     @ParameterizedTest
@@ -255,5 +256,46 @@ class BackupServiceTest {
         assertEquals(502, catalog.executions().size());
         service = new BackupService(catalog, dir, rman);
         assertEquals("e0", ((Map<?, ?>) service.state().get("active")).get(db.id()));
+    }
+
+    @Test void everyFinishedExecutionIsReportedOnceToTheNotifier() throws Exception {
+        service.approve(strategy.id(), "Tester");
+        rman.fault = "zeroExitWithError";
+        var failed = run("BACKUP");
+        assertEquals("FALLIDO", failed.status());
+        assertEquals(List.of(failed.id()), notified.stream().map(Execution::id).toList());
+        assertEquals("FALLIDO", notified.getFirst().status());
+        rman.fault = "";
+        var ok = run("BACKUP");
+        assertEquals(List.of(failed.id(), ok.id()), notified.stream().map(Execution::id).toList());
+    }
+
+    @Test void validationFailureBeforeRmanIsAlsoReported() throws Exception {
+        service.approve(strategy.id(), "Tester");
+        rman.invalid = true;
+        var e = run("BACKUP");
+        assertEquals("FALLIDO", e.status());
+        assertEquals(1, notified.size());
+        assertTrue(notified.getFirst().message().startsWith("Validacion previa"));
+    }
+
+    @Test void keepsAnRmaFileForTheStrategyAndRemovesItWhenDeleted() throws Exception {
+        var file = dir.resolve("scripts").resolve(strategy.tag() + "-" + db.container() + ".rma");
+        assertEquals(RmanScript.backup(strategy, db), Files.readString(file), "se escribe al guardar");
+        service.approve(strategy.id(), "Tester");
+        assertEquals(RmanScript.backup(strategy, db), Files.readString(file));
+        var changed = strategy.withArchivelogs(false);
+        service.save(changed);
+        assertEquals(RmanScript.backup(changed, db), Files.readString(file), "refleja la estrategia vigente");
+        service.delete(strategy.id());
+        assertFalse(Files.exists(file));
+    }
+
+    @Test void executionEvidenceUsesTheRmaExtension() throws Exception {
+        service.approve(strategy.id(), "Tester");
+        var e = run("BACKUP");
+        assertEquals("EXITOSO", e.status());
+        assertEquals(RmanScript.backup(strategy, db), Files.readString(dir.resolve("executions").resolve(e.id()).resolve("script.rma")));
+        assertFalse(Files.exists(dir.resolve("executions").resolve(e.id()).resolve("script.rman")));
     }
 }
