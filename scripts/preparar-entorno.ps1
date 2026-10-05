@@ -1,10 +1,9 @@
-# Prepara todo lo necesario para ejecutar el proyecto en Windows. Se puede repetir sin riesgo:
-# lo que ya existe se reutiliza.
+# Prepara el laboratorio local en Windows; conserva el contenedor y los datos existentes.
 #   .\scripts\preparar-entorno.ps1            laboratorio Oracle + datos de prueba + compilacion
 #   .\scripts\preparar-entorno.ps1 -Iniciar   ademas inicia la aplicacion en http://127.0.0.1:8787
 param(
     [switch]$Iniciar,
-    [string]$Imagen = 'container-registry.oracle.com/database/free:latest'
+    [string]$Imagen = 'container-registry.oracle.com/database/free@sha256:8a8084193724b95bc62247e3af4218b357e4f172c78925551b2181dbe2566232'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -14,20 +13,44 @@ function SqlLab([string]$texto) { $texto | docker exec -i -u oracle $contenedor 
 
 Paso '1. Requisitos: Java 21+ y Docker'
 if (-not (Get-Command java -ErrorAction SilentlyContinue)) { throw 'Instala un JDK 21 o superior (por ejemplo https://adoptium.net) y vuelve a ejecutar.' }
-$javaVersion = (& java -version 2>&1 | Select-Object -First 1).ToString()
-if ($javaVersion -match '"(\d+)' -and [int]$Matches[1] -lt 21) { throw "Se requiere Java 21 o superior. Encontrado: $javaVersion" }
+$javaOutput = @(& java --version)
+$javaVersion = $javaOutput | Select-Object -First 1
+if ($LASTEXITCODE -ne 0 -or $javaVersion -notmatch '^(?:openjdk|java)\s+(\d+)' -or [int]$Matches[1] -lt 21) {
+    throw "Se requiere Java 21 o superior. No se pudo validar la version: $javaVersion"
+}
 Write-Host $javaVersion
 docker info --format '{{.ServerVersion}}' *> $null
 if ($LASTEXITCODE -ne 0) { throw 'Docker no responde. Inicia Docker Desktop y vuelve a ejecutar.' }
+$motor = docker info --format '{{.OSType}}'
+if ($LASTEXITCODE -ne 0 -or $motor -ne 'linux') { throw 'Este laboratorio requiere Docker Desktop en modo de contenedores Linux.' }
 
 Paso "2. Contenedor Oracle del laboratorio ($contenedor)"
 $existente = docker ps -a --filter "name=^/$contenedor$" --format '{{.Names}}'
+if ($LASTEXITCODE -ne 0) { throw 'No se pudieron comprobar los contenedores existentes.' }
 if ($existente -eq $contenedor) {
-    $etiqueta = docker inspect $contenedor --format '{{index .Config.Labels "edu.respaldos.lab"}}'
-    if ($etiqueta -ne 'true') { throw "Ya existe un contenedor '$contenedor' que no pertenece a este proyecto. Renombralo o eliminalo." }
+    $labelsJson = docker inspect $contenedor --format '{{json .Config.Labels}}'
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo comprobar la identidad del laboratorio existente.' }
+    $labels = $labelsJson | ConvertFrom-Json
+    if ($labels.'edu.respaldos.lab' -ne 'true') { throw "Ya existe un contenedor '$contenedor' que no pertenece a este proyecto. Revisa el conflicto sin borrar sus datos." }
+    if ($Imagen -match '@sha256:') {
+        $imageId = docker inspect $contenedor --format '{{.Image}}'
+        if ($LASTEXITCODE -ne 0) { throw 'No se pudo identificar la imagen del laboratorio existente.' }
+        $digests = docker image inspect $imageId --format '{{json .RepoDigests}}'
+        if ($LASTEXITCODE -ne 0) { throw 'No se pudo comprobar la version del laboratorio existente.' }
+        $actualDigests = $digests | ConvertFrom-Json
+        if ($actualDigests -notcontains $Imagen) {
+            throw 'El laboratorio existente usa otra imagen. No se reemplazo ni se borraron datos. Revisar una migracion antes de cambiar de version.'
+        }
+    }
     docker start $contenedor | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo iniciar el laboratorio existente.' }
     Write-Host 'El contenedor ya existia; se reutiliza.'
 } else {
+    $volumen = docker volume ls --filter 'name=^rman-lab-data$' --format '{{.Name}}'
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudieron comprobar los volumenes Docker.' }
+    if ($volumen -eq 'rman-lab-data') {
+        throw 'Existe rman-lab-data sin su contenedor. No se reutilizo ni modifico: revisar primero sus datos y como recuperar el laboratorio.'
+    }
     Write-Host "Descargando $Imagen (unos 4 GB la primera vez)..."
     docker pull $Imagen
     if ($LASTEXITCODE -ne 0) { throw "No se pudo descargar $Imagen." }
@@ -37,6 +60,7 @@ if ($existente -eq $contenedor) {
     $clave = ConvertTo-SecureString ('Lab9' + [guid]::NewGuid().ToString('N')) -AsPlainText -Force
     $clave | ConvertFrom-SecureString | Set-Content -LiteralPath (Join-Path $root 'runtime\oracle-password.dpapi')
     docker volume create --label 'edu.respaldos.lab=true' rman-lab-data | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo crear el volumen del laboratorio.' }
     docker run --rm --user 0 --network none --mount 'type=volume,source=rman-lab-data,target=/opt/oracle/oradata,volume-nocopy' `
         --entrypoint /bin/chown $Imagen oracle:oinstall /opt/oracle/oradata
     if ($LASTEXITCODE -ne 0) { throw 'No se pudieron preparar los permisos del volumen.' }
@@ -88,12 +112,15 @@ try {
 
 Paso 'Listo'
 Write-Host 'Para iniciar la aplicacion desde la carpeta del proyecto:'
-Write-Host '  java -jar target\gestor-rman-0.1.0.jar     y abre http://127.0.0.1:8787'
+Write-Host '  java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.port=8787" -jar "target/gestor-rman-0.1.0.jar"'
+Write-Host 'Abre http://127.0.0.1:8787 en este equipo.'
 if ($Iniciar) {
-    $app = Start-Process java -ArgumentList '-jar', 'target\gestor-rman-0.1.0.jar' -WorkingDirectory $root -NoNewWindow -PassThru
-    $limite = (Get-Date).AddSeconds(40)
-    while ((Get-Date) -lt $limite -and -not $app.HasExited) {
-        try { Invoke-WebRequest 'http://127.0.0.1:8787/api/state' -UseBasicParsing -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Seconds 1 }
+    Write-Host 'Aplicacion en esta terminal. Ctrl+C para detenerla; no detiene Oracle.'
+    Push-Location $root
+    try {
+        & java '-Djdk.net.unixdomain.tmpdir=runtime/app.lock' '-Dapp.mode=local' '-Dapp.port=8787' -jar 'target/gestor-rman-0.1.0.jar'
+        if ($LASTEXITCODE -ne 0) { throw 'La aplicacion no termino correctamente. Revisa el mensaje anterior; no se elimino el catalogo.' }
+    } finally {
+        Pop-Location
     }
-    if (-not $app.HasExited) { Start-Process 'http://127.0.0.1:8787'; Write-Host 'Aplicacion en ejecucion. Ctrl+C para detenerla.'; Wait-Process -Id $app.Id }
 }
