@@ -295,8 +295,11 @@ flowchart TB
         Sch[Schedules<br>cron e intervalos]
         Al[Alerts<br>control preventivo]
         R[Rman<br>docker exec]
+        Not[EmailNotifier<br>aviso al DBA]
+        Store[ScriptStore<br>archivos .rma]
         Cat[(Catalog H2)]
     end
+    SMTP[Servidor SMTP]
     subgraph Docker[Contenedor rman-lab]
         RMAN[RMAN / SQL*Plus] --> DB[(Oracle 26ai Free<br>CDB FREE, PDB FREEPDB1)]
     end
@@ -307,17 +310,22 @@ flowchart TB
     Svc --> Al
     Svc --> Cat
     Svc --> R
+    Svc --> Not
+    Svc --> Store
+    Not --> SMTP
     R --> RMAN
     RMAN --> BK[/runtime/backups/]
 ```
 
 | Modulo | Responsabilidad |
 | --- | --- |
-| Main | Servidor HTTP, rutas /api, validacion de Host y Origin, eleccion del modo local o simulacion |
+| Main | Servidor HTTP, rutas /api, validacion de Host y Origin, eleccion del modo local, simulacion o robot (--robot: solo planificador y avisos, sin servidor web) |
 | BackupService | Flujo: validar, aprobar, programar, ejecutar, evaluar evidencia, liberar bases, aplicar recomendaciones |
 | RmanScript | Construccion del script y validacion semantica (funcion pura) |
 | Schedules | "Cuando" como CronTrigger o SimpleTrigger continuo y calculo de ocurrencias |
 | Alerts | Reglas del control preventivo (funcion pura) |
+| Notifier, EmailNotifier, SmtpMailer, MailConfig | Aviso por correo al DBA cuando una ejecucion termina Fallida, Incierta o Con advertencias; el SMTP se configura por variables de entorno |
+| ScriptStore | Archivo .rma vigente de cada estrategia, en runtime/scripts |
 | Rman | docker exec de rman, sqlplus, stat y df; interpretacion de la salida |
 | SimulatedRman y Demo | Sustituto sin Oracle y datos de ejemplo para la demostracion publica |
 | Catalog | H2: bases, estrategias, aprobaciones, estado, ejecuciones y bitacora |
@@ -345,6 +353,7 @@ erDiagram
         string id PK
         string name
         string container
+        string dbaEmail
     }
     STRATEGIES {
         string id PK
@@ -403,6 +412,7 @@ sequenceDiagram
     participant C as Catalog
     participant R as Rman
     participant O as rman-lab
+    participant N as EmailNotifier
     Q->>S: disparo (estrategia, hora prevista)
     S->>S: script aprobado? base libre?
     S->>C: insertar ejecucion (clave de ocurrencia unica)
@@ -415,6 +425,8 @@ sequenceDiagram
         R->>O: identificar conjuntos por piezas y VALIDATE BACKUPSET
     end
     S->>C: estado final y evidencia
+    S->>N: ejecucion terminada
+    N-->>N: si fallo, correo al DBA con reintentos
 ```
 
 ## Diseno de la interfaz
