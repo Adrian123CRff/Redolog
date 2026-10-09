@@ -75,6 +75,38 @@ Esperar a que Oracle este listo antes de ejecutar respaldos. La terminal de Java
 debe permanecer abierta para ejecutar los horarios; Ctrl+C detiene la aplicacion,
 no el contenedor Oracle. No iniciarla dos veces sobre el mismo catalogo.
 
+## Correo de alertas al DBA
+
+Las variables de entorno y el correo del DBA son propios de cada equipo: Git no los
+comparte. Para recibir avisos de respaldos fallidos, en la misma terminal de
+PowerShell donde se inicia Java:
+
+```powershell
+$env:GESTOR_SMTP_HOST = "smtp.gmail.com"
+$env:GESTOR_SMTP_USER = "cuenta@gmail.com"
+$env:GESTOR_SMTP_PASSWORD = "contrasena-de-aplicacion"
+java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.port=8787" -jar "target/gestor-rman-0.1.0.jar"
+```
+
+Opcionales: `GESTOR_SMTP_PORT` (587), `GESTOR_SMTP_FROM` (el usuario) y
+`GESTOR_SMTP_STARTTLS` (true). No escribir la contrasena en archivos del
+repositorio. Luego, en Bases de datos, registrar el "Correo del DBA" y usar
+"Enviar correo de prueba". Sin `GESTOR_SMTP_HOST` el correo queda desactivado.
+
+## Modo robot (sin interfaz web)
+
+Para que se ejecuten los horarios sin abrir el navegador, iniciar Java con
+`--robot` al final del mismo comando (con o sin las variables SMTP):
+
+```powershell
+java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" -jar "target/gestor-rman-0.1.0.jar" --robot
+```
+
+No abre el puerto 8787. El robot y la interfaz comparten el catalogo, por lo que
+no pueden estar abiertos a la vez: detener uno antes de iniciar el otro. Para
+dejarlo en segundo plano se puede crear una tarea del Programador de tareas de
+Windows ("Al iniciar sesion") que ejecute ese comando desde la carpeta del proyecto.
+
 ## Compartir cambios mediante Git
 
 El codigo y los scripts SQL se comparten; la base de datos no se sincroniza al

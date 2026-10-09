@@ -207,6 +207,33 @@ flowchart LR
     I -. recomendacion aplicada .-> A
 ```
 
+## Aviso por correo al DBA
+
+Origen: el profesor indico en clase que el programa audite el registro de RMAN y,
+si hay un error, avise por correo al DBA. El enunciado solo exige generar
+advertencias o alertas (seccion 11); el correo es el canal con el que llegan fuera
+de la interfaz.
+
+- Cada base guarda un correo opcional del DBA. El servidor SMTP se configura con
+  variables de entorno, no en el catalogo.
+- `BackupService` entrega cada ejecucion terminada a un `Notifier` (interfaz).
+  `EmailNotifier` avisa solo los estados Fallido, Incierto y Con advertencias, envia
+  en un hilo propio con 3 intentos y registra `NOTIFICACION_ENVIADA`,
+  `NOTIFICACION_FALLIDA` o `NOTIFICACION_OMITIDA` (sin correo del DBA).
+- Un aviso fallido nunca cambia el resultado del respaldo.
+- La demostracion publica (simulacion) usa un notificador vacio.
+
+## Equivalencia con los terminos usados en clase
+
+| Termino de clase | En esta herramienta |
+| --- | --- |
+| Parcial | Alcance "Tablespaces" o "Datafiles" con tipo completo o incremental |
+| Completo / full backup | Alcance "Base completa" con tipo completo |
+| Incremental | Nivel 0, nivel 1 diferencial o nivel 1 acumulativo |
+| Total plus (full + archive + control file) | Alcance "Base completa" con archived logs, control file y SPFILE marcados |
+| Incompleto | No es un tipo de respaldo: es un tipo de recuperacion (hasta un punto en el tiempo) |
+| Archivo .rma | Script RMAN de la estrategia, en `runtime/scripts/` |
+
 ## Controles preventivos
 
 | Condicion (seccion 11) | Nivel | Deteccion | Riesgo que reduce |
@@ -268,8 +295,11 @@ flowchart TB
         Sch[Schedules<br>cron e intervalos]
         Al[Alerts<br>control preventivo]
         R[Rman<br>docker exec]
+        Not[EmailNotifier<br>aviso al DBA]
+        Store[ScriptStore<br>archivos .rma]
         Cat[(Catalog H2)]
     end
+    SMTP[Servidor SMTP]
     subgraph Docker[Contenedor rman-lab]
         RMAN[RMAN / SQL*Plus] --> DB[(Oracle 26ai Free<br>CDB FREE, PDB FREEPDB1)]
     end
@@ -280,17 +310,22 @@ flowchart TB
     Svc --> Al
     Svc --> Cat
     Svc --> R
+    Svc --> Not
+    Svc --> Store
+    Not --> SMTP
     R --> RMAN
     RMAN --> BK[/runtime/backups/]
 ```
 
 | Modulo | Responsabilidad |
 | --- | --- |
-| Main | Servidor HTTP, rutas /api, validacion de Host y Origin, eleccion del modo local o simulacion |
+| Main | Servidor HTTP, rutas /api, validacion de Host y Origin, eleccion del modo local, simulacion o robot (--robot: solo planificador y avisos, sin servidor web) |
 | BackupService | Flujo: validar, aprobar, programar, ejecutar, evaluar evidencia, liberar bases, aplicar recomendaciones |
 | RmanScript | Construccion del script y validacion semantica (funcion pura) |
 | Schedules | "Cuando" como CronTrigger o SimpleTrigger continuo y calculo de ocurrencias |
 | Alerts | Reglas del control preventivo (funcion pura) |
+| Notifier, EmailNotifier, SmtpMailer, MailConfig | Aviso por correo al DBA cuando una ejecucion termina Fallida, Incierta o Con advertencias; el SMTP se configura por variables de entorno |
+| ScriptStore | Archivo .rma vigente de cada estrategia, en runtime/scripts |
 | Rman | docker exec de rman, sqlplus, stat y df; interpretacion de la salida |
 | SimulatedRman y Demo | Sustituto sin Oracle y datos de ejemplo para la demostracion publica |
 | Catalog | H2: bases, estrategias, aprobaciones, estado, ejecuciones y bitacora |
@@ -318,6 +353,7 @@ erDiagram
         string id PK
         string name
         string container
+        string dbaEmail
     }
     STRATEGIES {
         string id PK
@@ -376,6 +412,7 @@ sequenceDiagram
     participant C as Catalog
     participant R as Rman
     participant O as rman-lab
+    participant N as EmailNotifier
     Q->>S: disparo (estrategia, hora prevista)
     S->>S: script aprobado? base libre?
     S->>C: insertar ejecucion (clave de ocurrencia unica)
@@ -388,6 +425,8 @@ sequenceDiagram
         R->>O: identificar conjuntos por piezas y VALIDATE BACKUPSET
     end
     S->>C: estado final y evidencia
+    S->>N: ejecucion terminada
+    N-->>N: si fallo, correo al DBA con reintentos
 ```
 
 ## Diseno de la interfaz
@@ -416,6 +455,11 @@ Decisiones de diseno:
 - La programacion vive en memoria (Quartz) y se reconstruye desde el catalogo al
   iniciar. Con la aplicacion cerrada no se ejecutan respaldos; se reportan como
   "no ejecutados".
+  El modo `--robot` ejecuta los horarios sin interfaz web, pero no es un servicio
+  independiente: comparte el catalogo y el estado en memoria con la interfaz, por lo
+  que ambos no pueden estar abiertos a la vez.
+- Los reintentos de correo viven en memoria: si el proceso se detiene durante un
+  reintento, ese aviso se pierde. El estado de la ejecucion no se ve afectado.
 - En el laboratorio los respaldos quedan en el mismo disco que la base: sirve para
   practicar, pero no protege contra una falla del disco.
 - El criterio de prioridad se evalua por estrategia; no combina la cobertura de

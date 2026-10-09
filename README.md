@@ -87,6 +87,61 @@ Ejecutalo desde la carpeta del proyecto. Primeros pasos en la aplicacion:
 2. Estrategias: editar EST001 o crear una nueva, revisar el script y aprobarlo.
 3. Monitor: seguir la linea de tiempo y atender el control preventivo.
 
+## Correo de alertas al DBA
+
+Cuando una ejecucion termina Fallida, Incierta o Con advertencias, la herramienta
+envia un correo al DBA de esa base con la estrategia, el error de RMAN y la ruta
+del registro. Cada envio (o su omision) queda en la bitacora.
+
+1. En Bases de datos, registra la base con su "Correo del DBA".
+2. Define el servidor SMTP con variables de entorno antes de iniciar (la
+   contrasena no se guarda en el catalogo ni en el repositorio):
+
+        GESTOR_SMTP_HOST=smtp.gmail.com
+        GESTOR_SMTP_PORT=587               (opcional, 587 por defecto)
+        GESTOR_SMTP_USER=cuenta@gmail.com
+        GESTOR_SMTP_PASSWORD=contrasena-de-aplicacion
+        GESTOR_SMTP_FROM=cuenta@gmail.com  (opcional, usa el usuario)
+        GESTOR_SMTP_STARTTLS=true          (opcional, true por defecto)
+
+3. En la tarjeta de la base, "Enviar correo de prueba" confirma que llega.
+
+Sin `GESTOR_SMTP_HOST` el correo queda desactivado y la interfaz lo indica. El
+modo simulacion nunca envia correos.
+
+## Scripts .rma
+
+Cada estrategia deja en `runtime/scripts/` un archivo `RMA0001.rma`, `RMA0002.rma`...
+(un codigo consecutivo por estrategia, que se conserva al editarla) con el script
+RMAN vigente, que se puede revisar o ejecutar a mano. Cada ejecucion conserva ademas
+su propia copia (`script.rma`, `verify.rma`) como evidencia.
+
+## Catalogo en archivo plano y ejecutor
+
+`runtime/catalogo-estrategias.txt` tiene una linea por estrategia: codigo, script,
+base, prioridad, que respalda, dias, horas, si esta aprobada (con la huella del
+script), ultima ejecucion, resultado, piezas y log. Se ve en la vista **Catalogo**.
+
+El programa `edu.respaldos.Ejecutor` lee ese archivo y ejecuta con RMAN las
+estrategias que tocan, pidiendole el log, y actualiza el catalogo. Para usarlo en
+lugar del planificador de la aplicacion:
+
+    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.planificador=externo" -jar target/gestor-rman-0.1.0.jar
+    java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor              (en otra terminal)
+    java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor --ahora RMA0001
+
+Detalle en [docs/cambios-clase-2026-10-05.md](docs/cambios-clase-2026-10-05.md).
+
+## Modo robot (sin interfaz web)
+
+    java -jar target/gestor-rman-0.1.0.jar --robot
+
+Arranca solo el planificador y los avisos, sin servidor web, para dejarlo en segundo
+plano. Para que arranque con Windows, crea una tarea en el Programador de tareas
+("Al iniciar sesion") que ejecute ese comando desde la carpeta del proyecto. El
+robot y la interfaz comparten el catalogo, por lo que no pueden estar abiertos a la
+vez: cierra el robot antes de abrir la interfaz y viceversa.
+
 ## Modo simulacion (sin Oracle)
 
 Para probar la interfaz en un equipo sin Docker, o para la demostracion publica:
@@ -171,6 +226,8 @@ cambie y exija una nueva aprobacion, y conserva evidencia en
       SimulatedRman.java   sustituto sin Oracle para el modo simulacion
       Demo.java            datos de ejemplo del modo simulacion
       Catalog.java         catalogo local H2
+      FlatCatalog.java     catalogo en archivo plano (catalogo-estrategias.txt)
+      Ejecutor.java        programa aparte que lee el catalogo plano y ejecuta RMAN
     src/main/resources/web/  interfaz (HTML, CSS, JavaScript)
     scripts/                 instalacion del entorno y scripts del laboratorio
     docs/                    enunciado, revision, analisis y diseno, evidencias, despliegue
@@ -183,6 +240,8 @@ cambie y exija una nueva aprobacion, y conserva evidencia en
 - [Evidencia: prueba de recuperacion](docs/evidencias/prueba-recuperacion.md)
 - [Pruebas locales ampliadas del 04/10/2026](docs/evidencias/pruebas-ampliadas-2026-10-04.md)
 - [Despliegue](docs/despliegue.md)
+- [Cambios pedidos en la clase del 05/10/2026](docs/cambios-clase-2026-10-05.md)
+- [Fallos de medio fisico: riesgo, estrategia y recuperacion](docs/fallos-medio-fisico.md)
 
 ## Problemas frecuentes
 

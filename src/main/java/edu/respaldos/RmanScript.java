@@ -23,9 +23,13 @@ public final class RmanScript {
         comment(script, "Politica v2: " + s.startDate() + " | " + s.frequency() + " | " + s.days() + " | " + s.times()
             + " | intervalo=" + s.intervalHours() + " | ventana=" + s.windowMinutes() + " | activa=" + s.enabled());
         comment(script, "Responsable: " + s.responsible() + " | Descripcion: " + s.description());
+        if (!s.tablespacePriorities().isEmpty())
+            comment(script, "Prioridad por tablespace: " + String.join(", ", s.tablespaces().stream().map(t -> t + "=" + s.priorityOf(t)).toList()));
         script.append("RUN {\n");
         script.append("  ALLOCATE CHANNEL d1 DEVICE TYPE DISK FORMAT '").append(s.destination()).append("/%d_%T_%U.bkp';\n");
-        if (s.backsUpData()) script.append("  BACKUP ").append(level(s)).append(options).append(target(s)).append(";\n");
+        if (s.backsUpData()) for (String target : targets(s)) script.append("  BACKUP ").append(level(s)).append(options).append(target).append(";\n");
+        // RMAN no copia los redo en linea: se archiva el grupo actual para que su contenido quede en un archived log respaldado.
+        if (s.onlineRedo()) script.append("  SQL 'ALTER SYSTEM ARCHIVE LOG CURRENT';\n");
         // Despues de los datos: RMAN archiva el redo en linea actual y respalda solo los logs nuevos,
         // incluido el redo generado durante el respaldo, necesario para recuperar hasta un punto consistente.
         if (s.archivelogs()) script.append("  BACKUP ").append(options).append("ARCHIVELOG ALL NOT BACKED UP 1 TIMES;\n");
@@ -66,6 +70,20 @@ public final class RmanScript {
             + "|" + s.destination());
     }
 
+    /**
+     * Un BACKUP por nivel de prioridad, de ALTA a BAJA, para que lo mas critico se copie primero.
+     * Sin prioridades propias queda un solo BACKUP, igual que antes (la huella aprobada no cambia).
+     */
+    static List<String> targets(Strategy s) {
+        if (!s.scope().equals("TABLESPACE") || s.tablespacePriorities().isEmpty()) return List.of(target(s));
+        var result = new ArrayList<String>();
+        for (String level : Models.PRIORITIES) {
+            var group = s.tablespaces().stream().filter(t -> s.priorityOf(t).equals(level)).toList();
+            if (!group.isEmpty()) result.add("TABLESPACE " + String.join(", ", group));
+        }
+        return result;
+    }
+
     static String target(Strategy s) {
         return switch (s.scope()) {
             case "DATABASE" -> "DATABASE";
@@ -101,6 +119,7 @@ public final class RmanScript {
             case "DATAFILE" -> parts.add("datafiles " + String.join(", ", s.datafiles().stream().map(String::valueOf).toList()));
             default -> {}
         }
+        if (s.onlineRedo()) parts.add("redo en linea (archivado)");
         if (s.archivelogs()) parts.add("archived redo logs");
         if (s.controlfile()) parts.add("control file");
         if (s.spfile()) parts.add("SPFILE");
@@ -126,7 +145,9 @@ public final class RmanScript {
         if (s.description() == null) issues.add(new Issue("ADVERTENCIA", "SIN_DESCRIPCION", "Configuracion incompleta: falta la descripcion o justificacion de la estrategia."));
         if (s.times().isEmpty()) issues.add(new Issue("ADVERTENCIA", "SIN_HORARIO", "La estrategia no tiene programacion: no se ejecutara automaticamente."));
         if (!s.enabled()) issues.add(new Issue("INFORMATIVA", "INACTIVA", "La estrategia esta inactiva: se puede aprobar, pero no se programara."));
-        if (!s.times().isEmpty()) {
+        if (s.frequency().equals("UNA_VEZ"))
+            issues.add(new Issue("INFORMATIVA", "NO_CICLICA", "La estrategia no es ciclica: se ejecuta solo el " + s.startDate() + " y no se repite."));
+        else if (!s.times().isEmpty()) {
             long gap = Schedules.maxGapHours(s, java.time.Instant.now(), BackupService.ZONE_ID);
             int rpo = Models.rpoHours(s.priority());
             if (gap > rpo) issues.add(new Issue("ADVERTENCIA", "FRECUENCIA_INSUFICIENTE", "Frecuencia insuficiente para la prioridad " + s.priority().toLowerCase()

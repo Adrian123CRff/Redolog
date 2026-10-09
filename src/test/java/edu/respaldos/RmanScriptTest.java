@@ -165,4 +165,44 @@ class RmanScriptTest {
         assertFalse(e.evidence().verified());
         assertNull(e.evidence().coverageHash());
     }
+
+    static Strategy prioritized(Map<String, String> priorities, Boolean onlineRedo, boolean archivelogs) {
+        return new Strategy("s1", "EST001 - Pedidos", "Pedidos del laboratorio", "db1", "Adrian", "MEDIA", true, "TABLESPACE",
+            List.of("FREEPDB1:LAB_DATOS", "USERS", "SYSAUX"), null, archivelogs, true, false, "FULL", false, false, "2026-09-01", "DIARIA", null,
+            List.of("02:00"), null, 60, "/opt/oracle/backup", priorities, onlineRedo, null);
+    }
+
+    @Test
+    void tablespacePrioritiesBackUpTheMostCriticalFirst() {
+        var s = prioritized(Map.of("USERS", "baja", "freepdb1:lab_datos", "ALTA", "NO_ELEGIDO", "ALTA"), false, false);
+        assertEquals(Map.of("FREEPDB1:LAB_DATOS", "ALTA", "USERS", "BAJA"), s.tablespacePriorities(), "solo los elegidos y distintos de la estrategia");
+        assertEquals("MEDIA", s.priorityOf("SYSAUX"));
+        String script = RmanScript.backup(s, DB);
+        int alta = script.indexOf("TAG 'EST001_PEDIDOS' TABLESPACE FREEPDB1:LAB_DATOS;");
+        int media = script.indexOf("TAG 'EST001_PEDIDOS' TABLESPACE SYSAUX;");
+        int baja = script.indexOf("TAG 'EST001_PEDIDOS' TABLESPACE USERS;");
+        assertTrue(alta > 0 && alta < media && media < baja, script);
+        assertTrue(script.contains("# Prioridad por tablespace: FREEPDB1:LAB_DATOS=ALTA, USERS=BAJA, SYSAUX=MEDIA"));
+        assertThrows(IllegalArgumentException.class, () -> prioritized(Map.of("USERS", "URGENTE"), false, false));
+    }
+
+    @Test
+    void withoutOwnPrioritiesTheScriptAndItsApprovalDoNotChange() {
+        var legacy = new Strategy("s1", "EST001 - Pedidos", "Pedidos del laboratorio", "db1", "Adrian", "MEDIA", true, "TABLESPACE",
+            List.of("FREEPDB1:LAB_DATOS", "USERS", "SYSAUX"), null, false, true, false, "FULL", false, false, "2026-09-01", "DIARIA", null,
+            List.of("02:00"), null, 60, "/opt/oracle/backup");
+        assertEquals(RmanScript.backup(legacy, DB), RmanScript.backup(prioritized(Map.of("USERS", "MEDIA"), null, false), DB));
+        assertTrue(RmanScript.backup(legacy, DB).contains("TABLESPACE FREEPDB1:LAB_DATOS, USERS, SYSAUX;"));
+    }
+
+    @Test
+    void onlineRedoIsArchivedAndBackedUp() {
+        var s = prioritized(Map.of(), true, false);
+        assertTrue(s.archivelogs(), "el redo en linea se protege con su archived log");
+        String script = RmanScript.backup(s, DB);
+        int archive = script.indexOf("SQL 'ALTER SYSTEM ARCHIVE LOG CURRENT';"), logs = script.indexOf("ARCHIVELOG ALL NOT BACKED UP 1 TIMES;");
+        assertTrue(archive > 0 && archive < logs, script);
+        assertTrue(RmanScript.what(s).contains("redo en linea"));
+        assertFalse(RmanScript.backup(prioritized(Map.of(), false, true), DB).contains("ARCHIVE LOG CURRENT"));
+    }
 }

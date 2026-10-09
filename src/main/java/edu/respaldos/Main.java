@@ -6,6 +6,8 @@ import edu.respaldos.Models.*;
 import java.net.*;
 import java.nio.file.*;
 import java.util.*;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 
 public final class Main {
@@ -16,6 +18,9 @@ public final class Main {
         // Modo local: RMAN real via Docker, solo en 127.0.0.1. Modo simulacion: demostracion publica
         // sin Oracle (Render u otro hosting); es el unico que puede escuchar fuera de la maquina.
         boolean simulation = "simulacion".equalsIgnoreCase(System.getProperty("app.mode", Objects.requireNonNullElse(System.getenv("GESTOR_MODO"), "local")));
+        // Modo robot: solo planificador y avisos, sin servidor web; pensado para dejarlo en segundo plano.
+        boolean robot = Arrays.asList(args).contains("--robot") || "robot".equalsIgnoreCase(System.getProperty("app.mode"));
+        if (robot && simulation) throw new IllegalStateException("El modo robot no se combina con la simulacion.");
         int port = Integer.parseInt(System.getProperty("app.port", simulation ? Objects.requireNonNullElse(System.getenv("PORT"), "8787") : "8787"));
         Path runtime = Path.of(System.getProperty("app.data", simulation ? "runtime-simulacion" : "runtime")).toAbsolutePath();
         Files.createDirectories(runtime);
@@ -32,7 +37,19 @@ public final class Main {
                 db.id(), "DBA del grupo", "ALTA", false, "TABLESPACE", List.of("FREEPDB1:LAB_DATOS"), List.of(), true, true, true,
                 "FULL", true, false, null, "DIARIA", null, List.of("13:00", "15:00", "18:00", "21:00"), null, 30, Models.DEFAULT_DESTINATION));
         }
-        var service = new BackupService(catalog, runtime, simulation ? simulated : new Rman());
+        // La demostracion publica nunca envia correos; en modo local el correo existe solo si hay SMTP configurado.
+        Mailer mailer = simulation ? null : MailConfig.fromEnvironment().map(SmtpMailer::new).orElse(null);
+        Notifier notifier = mailer == null ? Notifier.NONE : new EmailNotifier(catalog, mailer, runtime, 3, Duration.ofSeconds(10));
+        // Planificador externo: la aplicacion no ejecuta horarios; lo hace el programa Ejecutor leyendo el catalogo plano.
+        boolean external = "externo".equalsIgnoreCase(System.getProperty("app.planificador", Objects.requireNonNullElse(System.getenv("GESTOR_PLANIFICADOR"), "interno")));
+        if (external && (robot || simulation)) throw new IllegalStateException("El planificador externo no se combina con el modo robot ni con la simulacion.");
+        var service = new BackupService(catalog, runtime, simulation ? simulated : new Rman(), notifier, !external);
+        if (robot) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> { try { service.close(); lock.release(); lockChannel.close(); } catch (Exception ignored) {} }));
+            System.out.println("Gestor RMAN en MODO ROBOT: ejecuta los horarios sin interfaz web. Ctrl+C para detenerlo.");
+            new CountDownLatch(1).await();
+            return;
+        }
         var server = HttpServer.create(new InetSocketAddress(simulation ? System.getProperty("app.host", "0.0.0.0") : "127.0.0.1", port), 0);
         var httpPool = Executors.newFixedThreadPool(8); server.setExecutor(httpPool);
         String origin = "http://127.0.0.1:" + port;
@@ -47,7 +64,7 @@ public final class Main {
                     String requestOrigin = exchange.getRequestHeaders().getFirst("Origin");
                     var allowed = simulation ? Set.of("http://" + host, "https://" + host) : Set.of(origin, "http://localhost:" + port);
                     if (requestOrigin != null && !allowed.contains(requestOrigin)) { send(exchange, 403, Map.of("error", "Origen no permitido.")); return; }
-                    api(exchange, path, catalog, service, runtime, simulation);
+                    api(exchange, path, catalog, service, runtime, simulation, mailer);
                 } else {
                     if (!Set.of("GET", "HEAD").contains(exchange.getRequestMethod())) { send(exchange, 405, Map.of("error", "Metodo no permitido.")); return; }
                     String resource = switch (path) { case "/" -> "index.html"; case "/app.js" -> "app.js"; case "/style.css" -> "style.css"; case "/lucide.min.js" -> "lucide.min.js"; default -> null; };
@@ -66,20 +83,27 @@ public final class Main {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> { try { server.stop(1); httpPool.shutdown(); service.close(); lock.release(); lockChannel.close(); } catch (Exception ignored) {} }));
         server.start();
         System.out.println(simulation ? "Gestor RMAN en MODO SIMULACION (sin Oracle) en el puerto " + port : "Gestor RMAN disponible en " + origin);
+        System.out.println("Catalogo de estrategias: " + runtime.resolve(FlatCatalog.FILE) + (external ? " | planificador EXTERNO: inicia el Ejecutor para que corran los horarios" : ""));
     }
 
-    private static void api(HttpExchange x, String path, Catalog catalog, BackupService service, Path runtime, boolean simulation) throws Exception {
+    private static void api(HttpExchange x, String path, Catalog catalog, BackupService service, Path runtime, boolean simulation, Mailer mailer) throws Exception {
         String method = x.getRequestMethod();
         if (method.equals("GET")) {
-            if (path.equals("/api/state")) { send(x, 200, service.state()); return; }
+            if (path.equals("/api/state")) {
+                var state = new LinkedHashMap<String, Object>(service.state());
+                state.put("mailConfigured", mailer != null);
+                send(x, 200, state); return;
+            }
+            if (path.equals("/api/catalog")) { send(x, 200, service.flatCatalog()); return; }
+            if (path.startsWith("/api/scripts/")) { send(x, 200, service.scriptFile(path.substring("/api/scripts/".length()))); return; }
             if (path.startsWith("/api/executions/")) {
                 String id = path.substring("/api/executions/".length()); var e = catalog.execution(id);
                 var dir = runtime.resolve("executions").resolve(e.id());
                 var body = new LinkedHashMap<String, Object>();
                 body.put("execution", e);
-                body.put("script", Rman.readTail(dir.resolve("script.rman"), 100_000));
+                body.put("script", Rman.readScript(dir, "script"));
                 body.put("log", Rman.readTail(dir.resolve("output.log"), 250_000));
-                body.put("verifyScript", Rman.readTail(dir.resolve("verify.rman"), 100_000));
+                body.put("verifyScript", Rman.readScript(dir, "verify"));
                 body.put("verifyLog", Rman.readTail(dir.resolve("verify.log"), 250_000));
                 send(x, 200, body); return;
             }
@@ -100,6 +124,7 @@ public final class Main {
                 case "/api/run" -> send(x, 202, Map.of("id", service.run(node.path("strategyId").asText(), node.path("operation").asText("BACKUP"), "MANUAL", null)));
                 case "/api/recommendations/apply" -> send(x, 200, service.apply(node.path("strategyId").asText(), node.path("action").asText()));
                 case "/api/release" -> { service.release(node.path("databaseId").asText()); send(x, 200, Map.of("ok", true)); }
+                case "/api/mail/test" -> send(x, 200, Map.of("sentTo", testMail(catalog, mailer, node.path("databaseId").asText())));
                 case "/api/diagnose" -> send(x, 200, service.diagnose(node.path("databaseId").asText()));
                 case "/api/strategies/delete" -> { service.delete(node.path("id").asText()); send(x, 200, Map.of("ok", true)); }
                 default -> send(x, 404, Map.of("error", "Ruta no encontrada."));
@@ -107,6 +132,16 @@ public final class Main {
             return;
         }
         send(x, 404, Map.of("error", "Ruta no encontrada."));
+    }
+
+    /** La prueba solo escribe al correo guardado de la base, nunca a una direccion recibida en la peticion. */
+    private static String testMail(Catalog catalog, Mailer mailer, String databaseId) throws Exception {
+        Models.require(mailer != null, "El correo no esta configurado: define las variables GESTOR_SMTP_* y reinicia.");
+        var db = catalog.database(databaseId);
+        Models.require(db.dbaEmail() != null, "Esta base no tiene correo del DBA.");
+        try { mailer.send(db.dbaEmail(), "[RMAN] Prueba de correo - " + EmailNotifier.singleLine(db.name()), "Este es un mensaje de prueba del Gestor de estrategias de respaldo RMAN."); }
+        catch (Exception e) { throw new IllegalStateException("No se pudo enviar la prueba: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage())); }
+        return db.dbaEmail();
     }
 
     /** Jackson envuelve las validaciones del modelo; se devuelve el mensaje original. */

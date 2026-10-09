@@ -36,11 +36,12 @@ const PRIORITY_HINT = {
   BAJA: 'Baja: información de menor impacto o que puede reconstruirse. Objetivo: 7 días (168 h) como máximo.'
 };
 const DAYS = [['MON', 'Lun'], ['TUE', 'Mar'], ['WED', 'Mié'], ['THU', 'Jue'], ['FRI', 'Vie'], ['SAT', 'Sáb'], ['SUN', 'Dom']];
-const EVENT_LABEL = {ESTRATEGIA_CREADA: 'Estrategia creada', ESTRATEGIA_EDITADA: 'Estrategia editada', ESTRATEGIA_ELIMINADA: 'Estrategia eliminada', SCRIPT_APROBADO: 'Script aprobado', RECOMENDACION_APLICADA: 'Recomendación aplicada', BASE_LIBERADA: 'Base liberada', BASE_COMPROBADA: 'Base comprobada'};
+const EVENT_LABEL = {ESTRATEGIA_CREADA: 'Estrategia creada', ESTRATEGIA_EDITADA: 'Estrategia editada', ESTRATEGIA_ELIMINADA: 'Estrategia eliminada', SCRIPT_APROBADO: 'Script aprobado', RECOMENDACION_APLICADA: 'Recomendación aplicada', BASE_LIBERADA: 'Base liberada', BASE_COMPROBADA: 'Base comprobada', EJECUTOR: 'Ejecutor'};
 
 let state = {databases: [], statuses: {}, strategies: [], executions: [], alerts: [], upcoming: [], missed: [], events: [], active: {}};
 let currentView = 'monitor', alertFilter = '', formTimes = [], formDays = new Set(), refreshing = false, reviewId = null, previewTimer = null;
 let detail = {id: null, data: null, mode: 'evidence'};
+let formPriorities = {}, catalog = null, file = {name: '', content: ''};
 
 const fmt = (value, options) => value ? new Intl.DateTimeFormat('es-CR', {timeZone: ZONE, ...options}).format(new Date(value)) : '—';
 const formatDate = value => fmt(value, {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'});
@@ -92,14 +93,16 @@ function switchView(name) {
   currentView = name;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('hidden', v.id !== name + '-view'));
   document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n.dataset.view === name));
-  $('#view-title').textContent = {monitor: 'Monitor de respaldos', strategies: 'Estrategias de respaldo', executions: 'Historial de ejecuciones', databases: 'Bases de datos'}[name];
-  $('#new-button').classList.toggle('hidden', name === 'executions');
+  $('#view-title').textContent = {monitor: 'Monitor de respaldos', strategies: 'Estrategias de respaldo', catalog: 'Catálogo de estrategias', executions: 'Historial de ejecuciones', databases: 'Bases de datos'}[name];
+  $('#new-button').classList.toggle('hidden', name === 'executions' || name === 'catalog');
+  if (name === 'catalog') loadCatalog();
   $('#new-button').innerHTML = icon('plus') + (name === 'databases' ? 'Registrar base' : 'Nueva estrategia');
   if (name === 'monitor') renderTimeline();
   icons();
 }
 function render() {
   renderMonitor(); renderStrategies(); renderExecutions(); renderDatabases();
+  if (currentView === 'catalog') loadCatalog();
   const selection = $('#database-filter').value;
   $('#database-filter').innerHTML = '<option value="">Todas las bases</option>' + state.databases.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('');
   $('#database-filter').value = selection;
@@ -288,7 +291,7 @@ function renderStrategies() {
     const s = v.strategy, busy = state.active[s.databaseId];
     const status = (busy ? statusBadge('EJECUTANDO') : '') + lifecycle(v);
     return `<tr>
-      <td><strong>${esc(s.name)}</strong><small>${esc(dbName(s.databaseId))} · prioridad ${s.priority.toLowerCase()}${s.responsible ? ' · ' + esc(s.responsible) : ''}</small></td>
+      <td><strong>${esc(s.name)}</strong><small>${s.scriptCode ? esc(s.scriptCode) + '.rma · ' : ''}${esc(dbName(s.databaseId))} · prioridad ${s.priority.toLowerCase()}${s.responsible ? ' · ' + esc(s.responsible) : ''}</small></td>
       <td><small class="dark">${esc(v.what)}</small></td>
       <td><small class="dark">${esc(v.how)}</small><small>Destino ${esc(s.destination)}</small></td>
       <td><small class="dark">${esc(v.schedule)}</small><small>${v.nextRun ? 'Próxima: ' + formatDate(v.nextRun) : ''}</small></td>
@@ -306,11 +309,57 @@ function renderExecutions() {
       <td>${formatDate(e.startedAt)}</td>
       <td><strong>${esc(e.strategyName)}</strong><small>${esc(e.databaseName || dbName(e.databaseId))}</small></td>
       <td><strong>${e.operation === 'BACKUP' ? 'Respaldo' : 'Verificación'}</strong><small>${esc(e.backupType || '')}</small></td>
-      <td>${e.source === 'HORARIO' ? 'Programada' : 'Manual'}</td>
+      <td>${origin(e)}</td>
       <td>${duration(e)}</td>
       <td>${statusBadge(e.status)}<small class="clip">${esc(e.message)}</small></td>
       <td>${button('detail', e.id, 'Abrir evidencia', 'file-text')}</td>
     </tr>`).join('') : `<tr><td colspan="7" class="empty">${icon('history')}Todavía no hay ejecuciones${filter || op ? ' con este filtro' : ''}.</td></tr>`;
+}
+
+const origin = e => (e.message || '').startsWith('[Ejecutor') ? (e.source === 'HORARIO' ? 'Ejecutor (programada)' : 'Ejecutor (manual)') : e.source === 'HORARIO' ? 'Programada' : 'Manual';
+
+// ---------------- CATALOGO ----------------
+// Archivo plano runtime/catalogo-estrategias.txt: lo genera la aplicacion y lo lee el ejecutor.
+async function loadCatalog() {
+  try { catalog = await api('catalog'); renderCatalog(); }
+  catch (error) { $('#catalog-body').innerHTML = `<tr><td colspan="7" class="empty">${esc(error.message)}</td></tr>`; }
+}
+function renderCatalog() {
+  if (!catalog) return;
+  $('#catalog-path').textContent = catalog.path;
+  $('#catalog-scheduler').textContent = catalog.scheduler === 'EXTERNO'
+    ? 'Planificador EXTERNO: los horarios los ejecuta el programa Ejecutor leyendo este archivo (java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor).'
+    : 'Planificador INTERNO: la aplicación ejecuta los horarios. Para que los ejecute el programa Ejecutor, inicia la aplicación con -Dapp.planificador=externo.';
+  const days = v => v.split(',').filter(Boolean).map(d => DAYS.find(x => x[0] === d)?.[1] || d).join(' ');
+  $('#catalog-body').innerHTML = catalog.rows.length ? catalog.rows.map(r => {
+    const when = r.FRECUENCIA === 'INTERVALO' ? `Cada ${r.INTERVALO_H} h desde ${r.HORAS}` : r.FRECUENCIA === 'UNA_VEZ' ? `Una vez: ${r.INICIO} ${r.HORAS}` : `${r.DIAS.split(',').length === 7 ? 'Todos los días' : days(r.DIAS)} · ${r.HORAS || 'sin hora'}`;
+    const last = r.RESULTADO ? statusBadge(r.RESULTADO) + `<small>${formatDate(r.ULTIMA_EJECUCION)}</small>` : '<small>Sin ejecuciones</small>';
+    return `<tr>
+      <td><strong>${esc(r.CODIGO)}</strong><small>${esc(r.SCRIPT)}</small></td>
+      <td><strong>${esc(r.ESTRATEGIA)}</strong><small>${esc(r.BASE)} · prioridad ${esc((r.PRIORIDAD || '').toLowerCase())}</small></td>
+      <td><small class="dark">${esc(r.ELEMENTOS)}</small><small>${esc(r.TIPO)}</small></td>
+      <td><small class="dark">${esc(when)}</small><small>${r.ACTIVA === 'SI' ? 'Activa' : 'Inactiva'}</small></td>
+      <td>${r.APROBADA === 'SI' ? badge('Sí', 'good') + `<small>huella ${esc(r.HUELLA)}</small>` : badge('No', 'warn')}</td>
+      <td>${last}${r.PIEZAS ? `<small class="clip" title="${esc(r.PIEZAS)}">${esc(r.PIEZAS.split(';')[0])}</small>` : ''}</td>
+      <td><div class="row-actions">${button('script', r.ID, 'Ver script .rma', 'file-code')}${r.RESULTADO ? button('lastlog', r.ID, 'Ver log de la última ejecución', 'scroll-text') : ''}${button('run', r.ID, 'Ejecutar ahora', 'play', 'run')}</div></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="7" class="empty">${icon('book-open')}Todavía no hay estrategias en el catálogo.</td></tr>`;
+  icons();
+}
+function openFile(eyebrow, title, path, content, name) {
+  file = {name, content};
+  $('#file-eyebrow').textContent = eyebrow; $('#file-title').textContent = title; $('#file-path').textContent = path; $('#file-content').textContent = content;
+  if (!$('#file-dialog').open) $('#file-dialog').showModal();
+  icons();
+}
+async function openScript(strategyId) {
+  const data = await api('scripts/' + strategyId);
+  openFile('SCRIPT RMAN DE LA ESTRATEGIA', data.name, data.path, data.content, data.name);
+}
+async function openLastLog(strategyId) {
+  const last = state.executions.find(e => e.strategyId === strategyId && e.operation === 'BACKUP');
+  if (!last) throw Error('La estrategia todavía no tiene ejecuciones.');
+  await openExecution(last.id); detail.mode = 'log'; showDetail();
 }
 
 // ---------------- BASES ----------------
@@ -333,8 +382,15 @@ function renderDatabases() {
     const mode = !st ? badge('Sin comprobar') : !st.reachable ? badge('Sin conexión', 'bad') : badge(st.logMode, st.logMode === 'ARCHIVELOG' ? 'good' : 'warn');
     return `<article class="database-item"><div class="database-head">${icon('database')}<div><strong>${esc(d.name)}</strong><small>Contenedor ${esc(d.container)}</small></div>${mode}</div>
       <div class="database-info">${body}</div><small class="muted">${st ? 'Comprobada ' + formatDate(st.checkedAt) : ''}</small>
-      <button class="secondary" data-action="diagnose" data-id="${esc(d.id)}">${icon('plug-zap')}Comprobar conexión</button></article>`;
+      <small class="muted">${mailLine(d)}</small>
+      <button class="secondary" data-action="diagnose" data-id="${esc(d.id)}">${icon('plug-zap')}Comprobar conexión</button>
+      ${d.dbaEmail && state.mailConfigured ? `<button class="secondary" data-action="mailtest" data-id="${esc(d.id)}">${icon('mail')}Enviar correo de prueba</button>` : ''}</article>`;
   }).join('');
+}
+
+function mailLine(d) {
+  if (!d.dbaEmail) return 'Sin correo del DBA: los fallos no se avisan por correo.';
+  return 'Alertas a ' + esc(d.dbaEmail) + (state.mailConfigured ? '' : ' (el servidor SMTP no está configurado)');
 }
 
 // ---------------- CONSTRUCTOR ----------------
@@ -356,6 +412,8 @@ function openStrategy(s) {
   setRadio('scope', s?.scope || 'TABLESPACE');
   field('tablespaces').value = s?.tablespaces?.join(', ') || '';
   field('datafiles').value = s?.datafiles?.join(', ') || '';
+  field('onlineRedo').checked = s?.onlineRedo ?? false;
+  formPriorities = {...(s?.tablespacePriorities || {})};
   field('archivelogs').checked = s?.archivelogs ?? true;
   field('controlfile').checked = s?.controlfile ?? true;
   field('spfile').checked = s?.spfile ?? true;
@@ -364,7 +422,7 @@ function openStrategy(s) {
   field('verifyAfter').checked = s?.verifyAfter ?? false;
   field('startDate').value = s?.startDate || today();
   setRadio('frequency', s?.frequency || 'DIARIA');
-  formDays = new Set(s?.frequency && s.frequency !== 'DIARIA' ? s.days : DAYS.map(d => d[0]));
+  formDays = new Set(s?.frequency && !['DIARIA', 'UNA_VEZ'].includes(s.frequency) ? s.days : DAYS.map(d => d[0]));
   formTimes = s?.frequency === 'INTERVALO' ? [] : [...(s?.times || [])];
   field('intervalHours').value = s?.intervalHours || 4;
   $('#interval-start').value = s?.frequency === 'INTERVALO' ? s.times[0] || '00:00' : '00:00';
@@ -389,12 +447,16 @@ function readStrategy() {
     archivelogs: field('archivelogs').checked, controlfile: field('controlfile').checked, spfile: field('spfile').checked,
     method: field('method').value, compressed: field('compressed').checked, verifyAfter: field('verifyAfter').checked,
     startDate: field('startDate').value || null, frequency,
-    days: frequency === 'DIARIA' ? [] : DAYS.map(d => d[0]).filter(d => formDays.has(d)),
+    days: ['DIARIA', 'UNA_VEZ'].includes(frequency) ? [] : DAYS.map(d => d[0]).filter(d => formDays.has(d)),
     times: frequency === 'INTERVALO' ? [$('#interval-start').value].filter(Boolean) : formTimes,
     intervalHours: frequency === 'INTERVALO' ? number(field('intervalHours').value) : null,
-    windowMinutes: number(field('windowMinutes').value), destination: field('destination').value || null
+    windowMinutes: number(field('windowMinutes').value), destination: field('destination').value || null,
+    tablespacePriorities: scope === 'TABLESPACE' ? formPriorities : {}, onlineRedo: field('onlineRedo').checked
   };
 }
+// Redibujar una lista mientras se hace clic en ella pierde el clic (por ejemplo, al salir del campo Nombre).
+const lastHtml = new WeakMap();
+const setHtml = (el, html) => { if (lastHtml.get(el) !== html) { lastHtml.set(el, html); el.innerHTML = html; } };
 function syncForm() {
   const scope = radio('scope'), frequency = radio('frequency'), method = field('method').value;
   $('#tablespaces-field').classList.toggle('hidden', scope !== 'TABLESPACE');
@@ -404,19 +466,27 @@ function syncForm() {
   $('#method-hint').textContent = scope === 'COMPONENTS' ? 'Los archived logs, el control file y el SPFILE se copian completos; los incrementales solo aplican a datafiles.' : METHOD_HINT[method];
   $('#priority-hint').textContent = PRIORITY_HINT[field('priority').value];
   renderChain(); icons();
-  $('#days-field').classList.toggle('hidden', frequency === 'DIARIA');
+  $('#days-field').classList.toggle('hidden', frequency === 'DIARIA' || frequency === 'UNA_VEZ');
+  if (field('onlineRedo').checked) field('archivelogs').checked = true;
+  field('archivelogs').disabled = field('onlineRedo').checked;
+  $('#scope-kind').textContent = scope === 'DATABASE' && field('archivelogs').checked && field('controlfile').checked && field('spfile').checked
+    ? 'Respaldo FULL: base completa con todos sus componentes.' : scope === 'DATABASE' ? 'Base completa.' : scope === 'COMPONENTS' ? 'Solo componentes.' : 'Respaldo parcial: solo lo seleccionado.';
   $('#interval-field').classList.toggle('hidden', frequency !== 'INTERVALO');
   $('#times-field').classList.toggle('hidden', frequency === 'INTERVALO');
-  $('#days-field').innerHTML = DAYS.map(([code, label]) => `<button type="button" class="day ${formDays.has(code) ? 'selected' : ''}" data-day="${code}" aria-pressed="${formDays.has(code)}">${label}</button>`).join('');
+  setHtml($('#days-field'), DAYS.map(([code, label]) => `<button type="button" class="day ${formDays.has(code) ? 'selected' : ''}" data-day="${code}" aria-pressed="${formDays.has(code)}">${label}</button>`).join(''));
   const st = state.statuses[field('databaseId').value], dest = field('destination').value || '/opt/oracle/backup';
   const free = st?.freeKb?.[dest];
   $('#space-hint').textContent = !st ? 'Espacio no medido: comprueba la base en «Bases de datos».' : free === undefined ? 'Este destino aún no se ha medido; guarda la estrategia y vuelve a comprobar la base.'
     : free < 0 ? 'El destino no existe o no es accesible en el servidor Oracle.' : `${human(free * 1024)} libres en ${dest} (comprobado ${formatDate(st.checkedAt)}).`;
   const chosen = new Set(field('tablespaces').value.toUpperCase().split(/[,\s]+/).filter(Boolean));
   const ts = st?.reachable ? [...new Set(st.datafiles.filter(f => f.container !== 'PDB$SEED').map(f => f.container && !['CDB$ROOT', '-'].includes(f.container) ? f.container + ':' + f.tablespace : f.tablespace))] : [];
-  $('#tablespace-options').innerHTML = ts.map(t => `<button type="button" class="pick ${chosen.has(t) ? 'selected' : ''}" data-pick-ts="${esc(t)}">${esc(t)}</button>`).join('');
+  setHtml($('#tablespace-options'), ts.map(t => `<button type="button" class="pick ${chosen.has(t) ? 'selected' : ''}" data-pick-ts="${esc(t)}">${esc(t)}</button>`).join(''));
+  // Prioridad de cada tablespace dentro de la estrategia: se respalda primero lo mas critico.
+  const strategyPriority = field('priority').value;
+  setHtml($('#ts-priorities'), scope === 'TABLESPACE' && chosen.size > 1 ? '<span class="hint">Prioridad de cada tablespace (se respaldan de alta a baja)</span>' + [...chosen].map(t =>
+    `<div class="ts-row"><span>${esc(t)}</span><select data-ts-priority="${esc(t)}" aria-label="Prioridad de ${esc(t)}">${['ALTA', 'MEDIA', 'BAJA'].map(p => `<option value="${p}" ${(formPriorities[t] || strategyPriority) === p ? 'selected' : ''}>${p[0] + p.slice(1).toLowerCase()}</option>`).join('')}</select></div>`).join('') : '');
   const files = new Set(field('datafiles').value.split(/[,\s]+/).filter(Boolean));
-  $('#datafile-options').innerHTML = st?.reachable ? st.datafiles.map(f => `<button type="button" class="pick ${files.has(String(f.file)) ? 'selected' : ''}" data-pick-df="${f.file}" title="${esc(f.path)}">${f.file} · ${esc(f.tablespace)} · ${human(f.bytes)}</button>`).join('') : '';
+  setHtml($('#datafile-options'), st?.reachable ? st.datafiles.map(f => `<button type="button" class="pick ${files.has(String(f.file)) ? 'selected' : ''}" data-pick-df="${f.file}" title="${esc(f.path)}">${f.file} · ${esc(f.tablespace)} · ${human(f.bytes)}</button>`).join('') : '');
 }
 function renderTimes() {
   $('#times-list').innerHTML = formTimes.map(t => `<span class="time-chip">${esc(t)}<button type="button" data-remove-time="${esc(t)}" aria-label="Quitar horario ${esc(t)}">${icon('x')}</button></span>`).join('') || '<span class="muted">Sin horas: la estrategia no se programará.</span>';
@@ -489,6 +559,8 @@ async function openExecution(id, silent = false) {
     ['Conjuntos RMAN', e.evidence?.backupSets?.join(', ') || 'Sin identificar'], ['Respaldo verificado', e.evidence?.verifies || (e.evidence?.verified ? e.id : 'Sin verificar')]];
   $('#detail-facts').innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
   $('#show-verify').classList.toggle('hidden', !data.verifyLog);
+  // Un fallo se revisa en el log y se puede volver a correr de inmediato.
+  $('#rerun').classList.toggle('hidden', !(e.operation === 'BACKUP' && ['FALLIDO', 'CON_ADVERTENCIAS', 'OMITIDO'].includes(e.status)));
   showDetail();
   if (!$('#detail-dialog').open) $('#detail-dialog').showModal();
   icons();
@@ -549,8 +621,20 @@ $('#refresh').addEventListener('click', refresh);
 $('#search').addEventListener('input', renderStrategies);
 ['#database-filter', '#status-filter'].forEach(s => $(s).addEventListener('change', renderStrategies));
 ['#execution-filter', '#operation-filter'].forEach(s => $(s).addEventListener('change', renderExecutions));
-form.addEventListener('input', () => { syncForm(); schedulePreview(); });
-form.addEventListener('change', () => { syncForm(); schedulePreview(); });
+form.addEventListener('input', e => {
+  // Los selects de prioridad se redibujan en syncForm: el valor se guarda antes.
+  if (e.target.dataset.tsPriority) formPriorities[e.target.dataset.tsPriority] = e.target.value;
+  syncForm(); schedulePreview();
+});
+form.addEventListener('change', e => {
+  if (e.target.dataset.tsPriority) formPriorities[e.target.dataset.tsPriority] = e.target.value;
+  syncForm(); schedulePreview();
+});
+$('#full-button').addEventListener('click', () => {
+  setRadio('scope', 'DATABASE');
+  ['onlineRedo', 'archivelogs', 'controlfile', 'spfile'].forEach(n => { field(n).checked = true; });
+  syncForm(); schedulePreview();
+});
 form.addEventListener('click', e => {
   const day = e.target.closest('[data-day]');
   if (day) { formDays.has(day.dataset.day) ? formDays.delete(day.dataset.day) : formDays.add(day.dataset.day); syncForm(); schedulePreview(); }
@@ -596,7 +680,7 @@ $('#review-form').addEventListener('submit', async e => {
 });
 $('#database-form').addEventListener('submit', async e => {
   e.preventDefault(); const f = e.currentTarget, b = f.querySelector('[type=submit]'); b.disabled = true;
-  try { await api('databases', {name: f.elements.name.value, container: f.elements.container.value}); $('#database-dialog').close(); toast('Base registrada. Comprueba la conexión para validar sus estrategias.'); await refresh(); }
+  try { await api('databases', {name: f.elements.name.value, container: f.elements.container.value, dbaEmail: f.elements.dbaEmail.value}); $('#database-dialog').close(); toast('Base registrada. Comprueba la conexión para validar sus estrategias.'); await refresh(); }
   catch (error) { $('#db-error').textContent = error.message; }
   finally { b.disabled = false; }
 });
@@ -611,9 +695,12 @@ document.body.addEventListener('click', async e => {
     if (action === 'review') await openReview(id);
     if (action === 'delete' && confirm('¿Eliminar la estrategia "' + v.strategy.name + '"? El historial se conserva.')) { await api('strategies/delete', {id}); toast('Estrategia eliminada.'); await refresh(); }
     if (action === 'run') await runOperation(id, 'BACKUP');
+    if (action === 'script') await openScript(id);
+    if (action === 'lastlog') await openLastLog(id);
     if (action === 'validate') await runOperation(id, 'VALIDATE');
     if (action === 'detail') await openExecution(id);
     if (action === 'diagnose') await diagnose(id, b);
+    if (action === 'mailtest') toast('Correo de prueba enviado a ' + (await api('mail/test', {databaseId: id})).sentTo + '.');
   } catch (error) { toast(error.message, true); }
   finally { b.disabled = false; }
 });
@@ -634,7 +721,21 @@ $('#timeline').addEventListener('keydown', e => { const m = e.target.closest('.m
 [['#show-evidence', 'evidence'], ['#show-script', 'script'], ['#show-log', 'log'], ['#show-verify', 'verify']].forEach(([sel, mode]) => $(sel).addEventListener('click', () => { detail.mode = mode; showDetail(); }));
 $('#download-detail').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([detailText()], {type: 'text/plain;charset=utf-8'}));
-  const a = document.createElement('a'); a.href = url; a.download = {script: 'estrategia.rman', log: 'ejecucion.log', verify: 'verificacion.log', evidence: 'evidencia.txt'}[detail.mode]; a.click();
+  const a = document.createElement('a'); a.href = url; a.download = {script: 'estrategia.rma', log: 'ejecucion.log', verify: 'verificacion.log', evidence: 'evidencia.txt'}[detail.mode]; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+$('#rerun').addEventListener('click', async () => {
+  const e = detail.data?.execution; if (!e) return;
+  const b = $('#rerun'); b.disabled = true;
+  try { await runOperation(e.strategyId, 'BACKUP'); } catch (error) { toast(error.message, true); } finally { b.disabled = false; }
+});
+$('#catalog-raw').addEventListener('click', async () => {
+  await loadCatalog();
+  if (catalog) openFile('CATÁLOGO EN ARCHIVO PLANO', 'catalogo-estrategias.txt', catalog.path, catalog.text, 'catalogo-estrategias.txt');
+});
+$('#download-file').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([file.content], {type: 'text/plain;charset=utf-8'}));
+  const a = document.createElement('a'); a.href = url; a.download = file.name || 'archivo.txt'; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 window.addEventListener('resize', () => { clearTimeout(renderTimeline.t); renderTimeline.t = setTimeout(renderTimeline, 150); });

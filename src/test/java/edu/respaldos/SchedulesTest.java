@@ -47,4 +47,14 @@ class SchedulesTest {
         assertEquals(at("2026-09-28T08:00"), Schedules.next(s, at("2025-01-01T00:00"), Z));
         assertTrue(Schedules.occurrences(s, at("2026-09-29T00:00"), at("2026-09-28T00:00"), Z, 5).isEmpty());
     }
+
+    @Test void oneTimeStrategyIsNotCyclic() {
+        var s = strategy("UNA_VEZ", List.of("08:00", "20:00"), null, List.of("TUE"));
+        assertEquals(List.of(at("2026-09-28T08:00"), at("2026-09-28T20:00")),
+            Schedules.occurrences(s, at("2026-09-01T00:00"), at("2027-12-31T00:00"), Z, 50), "solo la fecha de inicio, sin repetirse");
+        assertEquals(Models.DAYS, s.days(), "los dias no aplican a una ejecucion unica");
+        assertTrue(Schedules.describe(s).startsWith("Una sola vez"));
+        assertTrue(RmanScript.check(s, null).stream().anyMatch(i -> i.code().equals("NO_CICLICA")));
+        assertTrue(RmanScript.check(s, null).stream().noneMatch(i -> i.code().equals("FRECUENCIA_INSUFICIENTE")));
+    }
 }

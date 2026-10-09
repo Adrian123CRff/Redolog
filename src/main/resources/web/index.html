@@ -6,6 +6,7 @@
   <nav aria-label="Principal">
     <button class="nav active" data-view="monitor"><i data-lucide="activity"></i>Monitor</button>
     <button class="nav" data-view="strategies"><i data-lucide="layers"></i>Estrategias</button>
+    <button class="nav" data-view="catalog"><i data-lucide="book-open"></i>Cat&aacute;logo</button>
     <button class="nav" data-view="executions"><i data-lucide="history"></i>Ejecuciones</button>
     <button class="nav" data-view="databases"><i data-lucide="database"></i>Bases de datos</button>
   </nav>
@@ -62,6 +63,14 @@
     <div class="table-footer"><span id="strategy-foot"></span><span>Zona horaria: America/Costa_Rica</span></div>
   </section>
 
+  <!-- CATALOGO (archivo plano que lee el ejecutor) -->
+  <section id="catalog-view" class="view hidden">
+    <div class="section-heading"><h2>Cat&aacute;logo de estrategias</h2><span class="muted" id="catalog-path">Archivo plano que lee el ejecutor; una l&iacute;nea por estrategia</span></div>
+    <p id="catalog-scheduler" class="hint-block"></p>
+    <div class="filters"><button id="catalog-raw" class="secondary"><i data-lucide="file-text"></i>Ver archivo plano</button></div>
+    <div class="table-wrap"><table><thead><tr><th>C&oacute;digo</th><th>Estrategia</th><th>Qu&eacute; (prioridad)</th><th>Cu&aacute;ndo</th><th>Aprobada</th><th>&Uacute;ltima ejecuci&oacute;n</th><th class="actions-col">Acciones</th></tr></thead><tbody id="catalog-body"></tbody></table></div>
+  </section>
+
   <!-- EJECUCIONES -->
   <section id="executions-view" class="view hidden">
     <div class="filters"><select id="execution-filter" aria-label="Filtrar resultado"><option value="">Todos los resultados</option><option value="EXITOSO">Exitoso</option><option value="CON_ADVERTENCIAS">Con advertencias</option><option value="FALLIDO">Fallido</option><option value="EJECUTANDO">Ejecutando</option><option value="INCIERTO">Incierto</option><option value="OMITIDO">Omitido</option></select><select id="operation-filter" aria-label="Filtrar operaci&oacute;n"><option value="">Respaldos y verificaciones</option><option value="BACKUP">Solo respaldos</option><option value="VALIDATE">Solo verificaciones</option></select></div>
@@ -91,9 +100,11 @@
       </fieldset>
       <fieldset class="step"><legend><span class="step-number">2</span>Qu&eacute; respaldar</legend>
         <div class="segments" role="radiogroup" aria-label="Alcance"><label><input type="radio" name="scope" value="DATABASE"><span><i data-lucide="database"></i>Base completa</span></label><label><input type="radio" name="scope" value="TABLESPACE" checked><span><i data-lucide="table-2"></i>Tablespaces</span></label><label><input type="radio" name="scope" value="DATAFILE"><span><i data-lucide="file"></i>Datafiles</span></label><label><input type="radio" name="scope" value="COMPONENTS"><span><i data-lucide="puzzle"></i>Solo componentes</span></label></div>
-        <div id="tablespaces-field"><label>Tablespaces <span class="hint">Separados por coma; en un PDB usa PDB:TABLESPACE</span><input name="tablespaces" placeholder="FREEPDB1:LAB_DATOS"></label><div id="tablespace-options" class="pick-list"></div></div>
+        <div id="tablespaces-field"><label>Tablespaces <span class="hint">Marca uno o varios; en un PDB usa PDB:TABLESPACE</span><input name="tablespaces" placeholder="FREEPDB1:LAB_DATOS"></label><div id="tablespace-options" class="pick-list"></div>
+          <div id="ts-priorities" class="ts-priorities"></div></div>
         <div id="datafiles-field" class="hidden"><label>N&uacute;meros de datafile <span class="hint">Separados por coma</span><input name="datafiles" placeholder="13, 14"></label><div id="datafile-options" class="pick-list"></div></div>
-        <div class="check-row"><label><input type="checkbox" name="archivelogs" checked>Archived redo logs</label><label><input type="checkbox" name="controlfile" checked>Control file</label><label><input type="checkbox" name="spfile" checked>SPFILE</label></div>
+        <div class="check-row"><label title="RMAN no copia los redo en linea: se archiva el grupo actual y se respalda como archived log"><input type="checkbox" name="onlineRedo">Redo logs en l&iacute;nea (archivar el actual)</label><label><input type="checkbox" name="archivelogs" checked>Archived redo logs</label><label><input type="checkbox" name="controlfile" checked>Control file</label><label><input type="checkbox" name="spfile" checked>SPFILE</label></div>
+        <div class="check-row"><button type="button" id="full-button" class="secondary small"><i data-lucide="check-check"></i>Full: marcar todo</button><span id="scope-kind" class="muted"></span></div>
       </fieldset>
       <fieldset class="step"><legend><span class="step-number">3</span>C&oacute;mo respaldar</legend>
         <div class="form-row"><label>Tipo de respaldo<select name="method"><option value="FULL">Completo (FULL)</option><option value="LEVEL0">Incremental nivel 0</option><option value="LEVEL1">Incremental nivel 1 diferencial</option><option value="CUMULATIVE">Incremental nivel 1 acumulativo</option></select></label><label>Nivel<output id="level-output" class="readonly">&mdash;</output></label></div>
@@ -103,7 +114,7 @@
       </fieldset>
       <fieldset class="step"><legend><span class="step-number">4</span>Cu&aacute;ndo respaldar</legend>
         <div class="form-row"><label>Fecha de inicio<input type="date" name="startDate"></label><label title="Umbral de advertencia; no detiene RMAN">Ventana: duraci&oacute;n m&aacute;xima (min)<input type="number" name="windowMinutes" min="5" max="1440" placeholder="60"></label></div>
-        <div class="segments small" role="radiogroup" aria-label="Frecuencia"><label><input type="radio" name="frequency" value="DIARIA" checked><span>Diaria</span></label><label><input type="radio" name="frequency" value="SEMANAL"><span>Semanal</span></label><label><input type="radio" name="frequency" value="INTERVALO"><span>Por intervalo</span></label></div>
+        <div class="segments small" role="radiogroup" aria-label="Frecuencia"><label><input type="radio" name="frequency" value="DIARIA" checked><span>Diaria</span></label><label><input type="radio" name="frequency" value="SEMANAL"><span>Semanal</span></label><label><input type="radio" name="frequency" value="INTERVALO"><span>Por intervalo</span></label><label><input type="radio" name="frequency" value="UNA_VEZ"><span>Una vez (no c&iacute;clica)</span></label></div>
         <div id="days-field" class="days hidden" role="group" aria-label="D&iacute;as de ejecuci&oacute;n"></div>
         <div id="interval-field" class="form-row hidden"><label>Cada (horas)<input type="number" name="intervalHours" min="1" max="12" value="4"></label><label>Hora de inicio<input type="time" id="interval-start" value="00:00"></label></div>
         <div id="times-field"><div class="time-entry"><input type="time" id="time-input" aria-label="Hora"><button type="button" id="add-time" class="secondary"><i data-lucide="plus"></i>Agregar hora</button></div><div id="times-list"></div></div>
@@ -139,12 +150,15 @@
   <div class="dialog-footer"><button type="button" class="secondary close-dialog">Cerrar</button><button type="submit" id="approve-button" class="primary"><i data-lucide="badge-check"></i>Aprobar y programar</button></div>
 </form></dialog>
 
-<dialog id="database-dialog"><form id="database-form"><div class="dialog-head"><h2>Registrar base de datos</h2><button type="button" class="icon-button close-dialog" aria-label="Cerrar"><i data-lucide="x"></i></button></div><div class="dialog-body"><label>Nombre<input name="name" required maxlength="80" placeholder="Laboratorio Oracle"></label><label>Contenedor Docker<input name="container" required pattern="[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,62}" placeholder="rman-lab"></label><p class="form-error" id="db-error" role="alert"></p></div><div class="dialog-footer"><button class="primary" type="submit"><i data-lucide="plus"></i>Registrar base</button></div></form></dialog>
+<dialog id="database-dialog"><form id="database-form"><div class="dialog-head"><h2>Registrar base de datos</h2><button type="button" class="icon-button close-dialog" aria-label="Cerrar"><i data-lucide="x"></i></button></div><div class="dialog-body"><label>Nombre<input name="name" required maxlength="80" placeholder="Laboratorio Oracle"></label><label>Contenedor Docker<input name="container" required pattern="[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,62}" placeholder="rman-lab"></label><label>Correo del DBA (alertas de fallo)<input name="dbaEmail" type="email" maxlength="120" placeholder="dba@organizacion.cr"></label><p class="form-error" id="db-error" role="alert"></p></div><div class="dialog-footer"><button class="primary" type="submit"><i data-lucide="plus"></i>Registrar base</button></div></form></dialog>
 
 <!-- EVIDENCIA -->
 <dialog id="detail-dialog" class="wide-dialog"><div class="dialog-head"><div><span class="eyebrow" id="detail-eyebrow">EVIDENCIA</span><h2 id="detail-title">Ejecuci&oacute;n</h2></div><button class="icon-button close-dialog" aria-label="Cerrar"><i data-lucide="x"></i></button></div>
   <div class="dialog-body"><p id="detail-message" class="detail-message"></p><dl id="detail-facts" class="facts"></dl>
-    <div class="detail-tabs"><button id="show-evidence" class="secondary">Evidencia</button><button id="show-script" class="secondary">Script</button><button id="show-log" class="secondary">Registro RMAN</button><button id="show-verify" class="secondary">Verificaci&oacute;n</button><button id="download-detail" class="icon-button" title="Descargar" aria-label="Descargar"><i data-lucide="download"></i></button></div>
+    <div class="detail-tabs"><button id="rerun" class="primary hidden"><i data-lucide="rotate-ccw"></i>Volver a ejecutar ahora</button><button id="show-evidence" class="secondary">Evidencia</button><button id="show-script" class="secondary">Script</button><button id="show-log" class="secondary">Registro RMAN</button><button id="show-verify" class="secondary">Verificaci&oacute;n</button><button id="download-detail" class="icon-button" title="Descargar" aria-label="Descargar"><i data-lucide="download"></i></button></div>
     <pre id="detail-content" tabindex="0"></pre></div></dialog>
+<!-- SCRIPT .rma O ARCHIVO PLANO -->
+<dialog id="file-dialog" class="wide-dialog"><div class="dialog-head"><div><span class="eyebrow" id="file-eyebrow">SCRIPT</span><h2 id="file-title">Archivo</h2></div><button class="icon-button close-dialog" aria-label="Cerrar"><i data-lucide="x"></i></button></div>
+  <div class="dialog-body"><p id="file-path" class="muted"></p><div class="detail-tabs"><button id="download-file" class="icon-button" title="Descargar" aria-label="Descargar"><i data-lucide="download"></i></button></div><pre id="file-content" tabindex="0"></pre></div></dialog>
 <div id="toast" role="status" class="toast hidden"></div>
 </body></html>
