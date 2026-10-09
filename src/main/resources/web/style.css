@@ -24,7 +24,6 @@ nav { display: grid; gap: 7px; }
 .nav:hover { background: #2c3c37; }
 .nav.active { background: #dcefe7; color: #144e3b; font-weight: 600; }
 .sidebar-bottom { margin-top: auto; padding: 20px 10px 0; }
-.version { font-size: 10px; color: #a7b8b1; }
 .connection { display: flex; align-items: center; gap: 8px; margin: 14px 0 8px; font-size: 12px; }
 .sidebar-bottom small { color: #8fa59c; font-size: 11px; }
 .dot { height: 7px; width: 7px; border-radius: 50%; background: #c2a34a; }
