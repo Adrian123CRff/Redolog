@@ -326,3 +326,8 @@ td .link-button { font-size: 11px; text-align: left; }
   .events li { grid-template-columns: 1fr; gap: 2px; }
   .toast { bottom: 15px; right: 15px; }
 }
+
+/* Prioridad por tablespace (constructor) */
+.ts-priorities { display: grid; gap: 6px; margin-top: 8px; }
+.ts-priorities .ts-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.ts-priorities select { width: auto; }

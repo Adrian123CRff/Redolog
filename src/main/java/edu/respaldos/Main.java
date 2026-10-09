@@ -40,7 +40,10 @@ public final class Main {
         // La demostracion publica nunca envia correos; en modo local el correo existe solo si hay SMTP configurado.
         Mailer mailer = simulation ? null : MailConfig.fromEnvironment().map(SmtpMailer::new).orElse(null);
         Notifier notifier = mailer == null ? Notifier.NONE : new EmailNotifier(catalog, mailer, runtime, 3, Duration.ofSeconds(10));
-        var service = new BackupService(catalog, runtime, simulation ? simulated : new Rman(), notifier);
+        // Planificador externo: la aplicacion no ejecuta horarios; lo hace el programa Ejecutor leyendo el catalogo plano.
+        boolean external = "externo".equalsIgnoreCase(System.getProperty("app.planificador", Objects.requireNonNullElse(System.getenv("GESTOR_PLANIFICADOR"), "interno")));
+        if (external && (robot || simulation)) throw new IllegalStateException("El planificador externo no se combina con el modo robot ni con la simulacion.");
+        var service = new BackupService(catalog, runtime, simulation ? simulated : new Rman(), notifier, !external);
         if (robot) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> { try { service.close(); lock.release(); lockChannel.close(); } catch (Exception ignored) {} }));
             System.out.println("Gestor RMAN en MODO ROBOT: ejecuta los horarios sin interfaz web. Ctrl+C para detenerlo.");
@@ -80,6 +83,7 @@ public final class Main {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> { try { server.stop(1); httpPool.shutdown(); service.close(); lock.release(); lockChannel.close(); } catch (Exception ignored) {} }));
         server.start();
         System.out.println(simulation ? "Gestor RMAN en MODO SIMULACION (sin Oracle) en el puerto " + port : "Gestor RMAN disponible en " + origin);
+        System.out.println("Catalogo de estrategias: " + runtime.resolve(FlatCatalog.FILE) + (external ? " | planificador EXTERNO: inicia el Ejecutor para que corran los horarios" : ""));
     }
 
     private static void api(HttpExchange x, String path, Catalog catalog, BackupService service, Path runtime, boolean simulation, Mailer mailer) throws Exception {
@@ -90,6 +94,8 @@ public final class Main {
                 state.put("mailConfigured", mailer != null);
                 send(x, 200, state); return;
             }
+            if (path.equals("/api/catalog")) { send(x, 200, service.flatCatalog()); return; }
+            if (path.startsWith("/api/scripts/")) { send(x, 200, service.scriptFile(path.substring("/api/scripts/".length()))); return; }
             if (path.startsWith("/api/executions/")) {
                 String id = path.substring("/api/executions/".length()); var e = catalog.execution(id);
                 var dir = runtime.resolve("executions").resolve(e.id());

@@ -23,12 +23,20 @@ public final class BackupService implements AutoCloseable {
     private final Scheduler scheduler;
     private final ExecutorService workers = Executors.newFixedThreadPool(3);
     private final Map<String, String> active = new ConcurrentHashMap<>();
+    /** false: los horarios los ejecuta el programa Ejecutor leyendo el catalogo plano (-Dapp.planificador=externo). */
+    private final boolean internalScheduler;
+    private final Set<String> imported = ConcurrentHashMap.newKeySet();
 
     public BackupService(Catalog catalog, Path runtime, Rman rman) throws Exception { this(catalog, runtime, rman, Notifier.NONE); }
 
-    public BackupService(Catalog catalog, Path runtime, Rman rman, Notifier notifier) throws Exception {
-        this.catalog = catalog; this.runtime = runtime; this.rman = rman; this.notifier = notifier;
+    public BackupService(Catalog catalog, Path runtime, Rman rman, Notifier notifier) throws Exception { this(catalog, runtime, rman, notifier, true); }
+
+    public BackupService(Catalog catalog, Path runtime, Rman rman, Notifier notifier, boolean internalScheduler) throws Exception {
+        this.catalog = catalog; this.runtime = runtime; this.rman = rman; this.notifier = notifier; this.internalScheduler = internalScheduler;
         this.scripts = new ScriptStore(runtime.resolve("scripts"));
+        // Las estrategias guardadas antes de los codigos RMA0001... reciben el suyo; la huella aprobada no cambia.
+        var pending = catalog.strategies().stream().filter(s -> s.scriptCode() == null).sorted(Comparator.comparing(Strategy::name)).toList();
+        for (var s : pending) catalog.save(s.withScriptCode(ScriptStore.nextCode(catalog.strategies())));
         // Un proceso Java detenido no puede saber si el RMAN que lanzo tambien se detuvo.
         for (var e : catalog.executions()) {
             if (List.of("EJECUTANDO", "INCIERTO").contains(e.status())) {
@@ -46,7 +54,11 @@ public final class BackupService implements AutoCloseable {
         scheduler.getContext().put("service", this);
         for (var s : catalog.strategies()) schedule(s);
         scheduler.start();
+        importExecutorRuns();
+        publishCatalog();
     }
+
+    public boolean internalScheduler() { return internalScheduler; }
 
     // ---------- Construccion y aprobacion ----------
 
@@ -68,13 +80,20 @@ public final class BackupService implements AutoCloseable {
         return approval.isPresent() && approval.get().scriptHash().equals(RmanScript.hash(script(s)));
     }
 
-    public synchronized Map<String, Object> save(Strategy s) throws Exception {
-        catalog.database(s.databaseId());
-        Models.require(!active.containsKey(s.databaseId()), "Hay una ejecucion activa en esta base.");
-        boolean existed = catalog.strategies().stream().anyMatch(o -> o.id().equals(s.id()));
+    public synchronized Map<String, Object> save(Strategy strategy) throws Exception {
+        catalog.database(strategy.databaseId());
+        Models.require(!active.containsKey(strategy.databaseId()), "Hay una ejecucion activa en esta base.");
+        var all = catalog.strategies();
+        var previous = all.stream().filter(o -> o.id().equals(strategy.id())).findFirst();
+        boolean existed = previous.isPresent();
+        // El codigo del archivo .rma se conserva al editar; la interfaz no lo envia.
+        String requested = previous.map(Strategy::scriptCode).orElse(strategy.scriptCode());
+        boolean taken = requested == null || all.stream().anyMatch(o -> !o.id().equals(strategy.id()) && requested.equals(o.scriptCode()));
+        var s = strategy.withScriptCode(taken ? ScriptStore.nextCode(all) : requested);
         catalog.save(s);
         event(existed ? "ESTRATEGIA_EDITADA" : "ESTRATEGIA_CREADA", s, s.name() + (approved(s) ? "" : " | requiere aprobacion del script"));
         schedule(s);
+        publishCatalog();
         return Map.of("strategy", s, "approved", approved(s));
     }
 
@@ -89,6 +108,7 @@ public final class BackupService implements AutoCloseable {
         catalog.save(approval);
         event("SCRIPT_APROBADO", s, "Aprobado por " + who + " | hash " + approval.scriptHash());
         schedule(s);
+        publishCatalog();
         return approval;
     }
 
@@ -97,6 +117,7 @@ public final class BackupService implements AutoCloseable {
         Models.require(!active.containsKey(s.databaseId()), "Espera a que termine la ejecucion.");
         scheduler.deleteJob(new JobKey(id)); scripts.delete(s, catalog.database(s.databaseId())); catalog.deleteStrategy(id);
         event("ESTRATEGIA_ELIMINADA", s, s.name() + " | el historial se conserva");
+        publishCatalog();
     }
 
     /** Aplica una recomendacion por decision del administrador; nunca se aplica sola. */
@@ -111,6 +132,7 @@ public final class BackupService implements AutoCloseable {
         catalog.save(changed);
         event("RECOMENDACION_APLICADA", changed, action + " | el script cambio y debe aprobarse de nuevo");
         schedule(changed);
+        publishCatalog();
         return Map.of("strategy", changed, "approved", approved(changed));
     }
 
@@ -120,7 +142,7 @@ public final class BackupService implements AutoCloseable {
         scheduler.deleteJob(new JobKey(s.id()));
         var db = catalog.database(s.databaseId());
         scripts.write(s, db, RmanScript.backup(s, db)); // el .rma de la estrategia refleja siempre su configuracion vigente
-        if (!s.enabled() || s.times().isEmpty() || !approved(s)) return;
+        if (!internalScheduler || !s.enabled() || s.times().isEmpty() || !approved(s)) return;
         var job = JobBuilder.newJob(ScheduledBackup.class).withIdentity(s.id()).usingJobData("strategyId", s.id()).storeDurably().build();
         scheduler.addJob(job, true);
         scheduler.addCalendar(s.id(), Schedules.calendar(s, ZONE_ID), true, true);
@@ -204,6 +226,7 @@ public final class BackupService implements AutoCloseable {
     /** Guarda el resultado final de una ejecucion y la comunica al notificador; un aviso fallido nunca cambia el resultado. */
     private void record(Execution finished) throws Exception {
         catalog.update(finished);
+        publishCatalog();
         try { notifier.notifyFinished(finished); }
         catch (RuntimeException e) { System.err.println("No se pudo avisar la ejecucion " + finished.id() + ": " + e); }
     }
@@ -293,6 +316,7 @@ public final class BackupService implements AutoCloseable {
     // ---------- Estado para la interfaz ----------
 
     public Map<String, Object> state() throws Exception {
+        importExecutorRuns();
         var now = Instant.now();
         var databases = catalog.databases();
         var strategies = catalog.strategies();
@@ -354,9 +378,126 @@ public final class BackupService implements AutoCloseable {
         result.put("events", catalog.events());
         result.put("active", Map.copyOf(active));
         result.put("mode", rman instanceof SimulatedRman ? "SIMULACION" : "LOCAL");
+        result.put("scheduler", internalScheduler ? "INTERNO" : "EXTERNO");
         result.put("timezone", ZONE);
         result.put("serverTime", now.toString());
         return result;
+    }
+
+    // ---------- Catalogo plano y ejecutor externo ----------
+
+    /** Reescribe runtime/catalogo-estrategias.txt; un fallo aqui nunca detiene la operacion que lo provoco. */
+    public synchronized void publishCatalog() {
+        try {
+            var databases = catalog.databases();
+            var executions = catalog.executions();
+            var rows = new ArrayList<Map<String, String>>();
+            var strategies = new ArrayList<>(catalog.strategies());
+            strategies.sort(Comparator.comparing(s -> Objects.requireNonNullElse(s.scriptCode(), "~")));
+            for (var s : strategies) {
+                var db = databases.stream().filter(d -> d.id().equals(s.databaseId())).findFirst().orElse(null);
+                if (db == null) continue;
+                String script = RmanScript.backup(s, db);
+                var approval = catalog.approval(s.id());
+                boolean ok = approval.isPresent() && approval.get().scriptHash().equals(RmanScript.hash(script));
+                var last = executions.stream().filter(e -> e.strategyId().equals(s.id()) && e.operation().equals("BACKUP")).findFirst();
+                var row = new LinkedHashMap<String, String>();
+                row.put("CODIGO", s.scriptCode());
+                row.put("SCRIPT", "scripts/" + scripts.fileName(s, db));
+                row.put("ID", s.id());
+                row.put("ESTRATEGIA", s.name());
+                row.put("BASE", db.name());
+                row.put("CONTENEDOR", db.container());
+                row.put("PRIORIDAD", s.priority());
+                row.put("ELEMENTOS", elements(s));
+                row.put("TIPO", RmanScript.how(s));
+                row.put("ACTIVA", s.enabled() ? "SI" : "NO");
+                row.put("APROBADA", ok ? "SI" : "NO");
+                row.put("HUELLA", ok ? approval.get().scriptHash() : "");
+                row.put("FRECUENCIA", s.frequency());
+                row.put("INICIO", s.startDate());
+                row.put("DIAS", String.join(",", s.days()));
+                row.put("HORAS", String.join(",", s.times()));
+                row.put("INTERVALO_H", s.intervalHours() == null ? "" : s.intervalHours().toString());
+                row.put("DESTINO", s.destination());
+                row.put("ULTIMA_EJECUCION", last.map(e -> Objects.requireNonNullElse(e.finishedAt(), e.startedAt())).orElse(""));
+                row.put("RESULTADO", last.map(Execution::status).orElse(""));
+                row.put("PIEZAS", last.map(e -> String.join(";", e.pieces().stream().map(p -> p.replaceAll(" \\(.*\\)$", "")).toList())).orElse(""));
+                row.put("LOG", last.map(e -> "executions/" + e.id() + "/output.log").orElse(""));
+                rows.add(row);
+            }
+            FlatCatalog.write(runtime, internalScheduler ? "INTERNO" : "EXTERNO", rows);
+        } catch (Exception e) { System.err.println("No se pudo actualizar el catalogo plano: " + e); }
+    }
+
+    /** QUE respalda la linea del catalogo, con la prioridad de cada tablespace. */
+    static String elements(Strategy s) {
+        var parts = new ArrayList<String>();
+        switch (s.scope()) {
+            case "DATABASE" -> parts.add("FULL (base completa)");
+            case "TABLESPACE" -> parts.add(String.join(", ", s.tablespaces().stream().map(t -> t + " (" + s.priorityOf(t) + ")").toList()));
+            case "DATAFILE" -> parts.add("datafiles " + String.join(", ", s.datafiles().stream().map(String::valueOf).toList()));
+            default -> {}
+        }
+        if (s.onlineRedo()) parts.add("redo en linea");
+        if (s.archivelogs()) parts.add("archive logs");
+        if (s.controlfile()) parts.add("control file");
+        if (s.spfile()) parts.add("spfile");
+        return String.join(" + ", parts);
+    }
+
+    /** Lleva al historial (y al aviso por correo) lo que ejecuto el programa Ejecutor. */
+    public synchronized void importExecutorRuns() {
+        List<Map<String, String>> results;
+        try { results = Ejecutor.results(runtime); }
+        catch (Exception e) { System.err.println("No se pudieron leer los resultados del ejecutor: " + e); return; }
+        boolean changed = false;
+        for (var r : results) {
+            String id = r.get("ID");
+            if (id == null || id.isBlank() || imported.contains(id)) continue;
+            try {
+                imported.add(id);
+                if (catalog.executions().stream().anyMatch(e -> e.id().equals(id))) continue;
+                var s = catalog.strategy(r.get("ESTRATEGIA_ID"));
+                var db = catalog.database(s.databaseId());
+                String planned = r.get("PROGRAMADA").isBlank() ? null : r.get("PROGRAMADA");
+                var pieces = r.get("PIEZAS").isBlank() ? List.<String>of() : List.of(r.get("PIEZAS").split(";"));
+                var details = r.get("DETALLES").isBlank() ? List.<String>of() : List.of(r.get("DETALLES").split(" ;; "));
+                Integer code = r.get("CODIGO_SALIDA").matches("-?\\d+") ? Integer.valueOf(r.get("CODIGO_SALIDA")) : null;
+                var e = new Execution(id, s.id(), s.name(), db.id(), db.name(), "BACKUP", RmanScript.how(s) + " | " + RmanScript.what(s),
+                    planned == null ? "MANUAL" : "HORARIO", planned, r.get("INICIO"), r.get("FIN"), r.get("RESULTADO"), code,
+                    "[Ejecutor " + r.get("CODIGO") + "] " + r.get("MENSAJE"), s.destination(), pieces, details, r.get("HUELLA"),
+                    new Evidence(RmanScript.coverageHash(s, db), pieces, List.of(), null, false));
+                // La clave de ocurrencia hace que el monitor no marque como "no ejecutado" un horario que cubrio el ejecutor.
+                if (!catalog.insert(e, planned == null ? null : s.id() + "|" + planned)) continue;
+                Path dir = runtime.resolve("executions").resolve(id), log = runtime.resolve(r.get("LOG")).normalize();
+                Files.createDirectories(dir);
+                if (log.startsWith(runtime.resolve("ejecutor").normalize()) && Files.exists(log)) Files.copy(log, dir.resolve("output.log"), StandardCopyOption.REPLACE_EXISTING);
+                Path script = scripts.path(s, db);
+                if (Files.exists(script)) Files.copy(script, dir.resolve("script" + Rman.SCRIPT_EXT), StandardCopyOption.REPLACE_EXISTING);
+                event("EJECUTOR", s, r.get("CODIGO") + " | " + r.get("RESULTADO") + " | " + r.get("MENSAJE"));
+                try { notifier.notifyFinished(e); }
+                catch (RuntimeException mailError) { System.err.println("No se pudo avisar la ejecucion " + id + ": " + mailError); }
+                changed = true;
+            } catch (Exception error) { System.err.println("Resultado del ejecutor no incorporado (" + id + "): " + error.getMessage()); }
+        }
+        if (changed) publishCatalog();
+    }
+
+    /** Contenido del catalogo plano y su ruta, para la vista Catalogo y el auditor. */
+    public Map<String, Object> flatCatalog() throws Exception {
+        var content = FlatCatalog.read(runtime);
+        Path file = runtime.resolve(FlatCatalog.FILE);
+        return Map.of("path", file.toString(), "scheduler", Objects.requireNonNullElse(content.scheduler(), "INTERNO"),
+            "columns", FlatCatalog.COLUMNS, "rows", content.rows(), "text", Files.exists(file) ? Files.readString(file) : "");
+    }
+
+    /** El archivo .rma vigente de una estrategia, tal como lo lee el ejecutor. */
+    public Map<String, Object> scriptFile(String strategyId) throws Exception {
+        var s = catalog.strategy(strategyId);
+        var db = catalog.database(s.databaseId());
+        Path file = scripts.path(s, db);
+        return Map.of("name", file.getFileName().toString(), "path", file.toString(), "content", Files.exists(file) ? Files.readString(file) : RmanScript.backup(s, db));
     }
 
     private void event(String type, Strategy s, String detail) throws Exception {

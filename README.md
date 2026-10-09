@@ -111,9 +111,26 @@ modo simulacion nunca envia correos.
 
 ## Scripts .rma
 
-Cada estrategia deja en `runtime/scripts/` un archivo `<ESTRATEGIA>-<contenedor>.rma`
-con el script RMAN vigente, que se puede revisar o ejecutar a mano. Cada ejecucion
-conserva ademas su propia copia (`script.rma`, `verify.rma`) como evidencia.
+Cada estrategia deja en `runtime/scripts/` un archivo `RMA0001.rma`, `RMA0002.rma`...
+(un codigo consecutivo por estrategia, que se conserva al editarla) con el script
+RMAN vigente, que se puede revisar o ejecutar a mano. Cada ejecucion conserva ademas
+su propia copia (`script.rma`, `verify.rma`) como evidencia.
+
+## Catalogo en archivo plano y ejecutor
+
+`runtime/catalogo-estrategias.txt` tiene una linea por estrategia: codigo, script,
+base, prioridad, que respalda, dias, horas, si esta aprobada (con la huella del
+script), ultima ejecucion, resultado, piezas y log. Se ve en la vista **Catalogo**.
+
+El programa `edu.respaldos.Ejecutor` lee ese archivo y ejecuta con RMAN las
+estrategias que tocan, pidiendole el log, y actualiza el catalogo. Para usarlo en
+lugar del planificador de la aplicacion:
+
+    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.planificador=externo" -jar target/gestor-rman-0.1.0.jar
+    java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor              (en otra terminal)
+    java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor --ahora RMA0001
+
+Detalle en [docs/cambios-clase-2026-10-05.md](docs/cambios-clase-2026-10-05.md).
 
 ## Modo robot (sin interfaz web)
 
@@ -209,6 +226,8 @@ cambie y exija una nueva aprobacion, y conserva evidencia en
       SimulatedRman.java   sustituto sin Oracle para el modo simulacion
       Demo.java            datos de ejemplo del modo simulacion
       Catalog.java         catalogo local H2
+      FlatCatalog.java     catalogo en archivo plano (catalogo-estrategias.txt)
+      Ejecutor.java        programa aparte que lee el catalogo plano y ejecuta RMAN
     src/main/resources/web/  interfaz (HTML, CSS, JavaScript)
     scripts/                 instalacion del entorno y scripts del laboratorio
     docs/                    enunciado, revision, analisis y diseno, evidencias, despliegue
@@ -221,6 +240,8 @@ cambie y exija una nueva aprobacion, y conserva evidencia en
 - [Evidencia: prueba de recuperacion](docs/evidencias/prueba-recuperacion.md)
 - [Pruebas locales ampliadas del 04/10/2026](docs/evidencias/pruebas-ampliadas-2026-10-04.md)
 - [Despliegue](docs/despliegue.md)
+- [Cambios pedidos en la clase del 05/10/2026](docs/cambios-clase-2026-10-05.md)
+- [Fallos de medio fisico: riesgo, estrategia y recuperacion](docs/fallos-medio-fisico.md)
 
 ## Problemas frecuentes
 

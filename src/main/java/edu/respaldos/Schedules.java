@@ -13,6 +13,12 @@ public final class Schedules {
 
     public static List<String> cron(Strategy s) {
         Models.require(!s.frequency().equals("INTERVALO"), "Los intervalos usan un disparador continuo, no cron.");
+        if (s.frequency().equals("UNA_VEZ")) {
+            // No ciclica: dia, mes y anio fijos de la fecha de inicio.
+            var date = LocalDate.parse(s.startDate());
+            return s.times().stream().map(LocalTime::parse)
+                .map(t -> "0 " + t.getMinute() + " " + t.getHour() + " " + date.getDayOfMonth() + " " + date.getMonthValue() + " ? " + date.getYear()).toList();
+        }
         String days = String.join(",", s.days());
         return s.times().stream().map(LocalTime::parse).map(t -> "0 " + t.getMinute() + " " + t.getHour() + " ? * " + days).toList();
     }
@@ -84,6 +90,7 @@ public final class Schedules {
         String text = switch (s.frequency()) {
             case "INTERVALO" -> "Cada " + s.intervalHours() + " h desde las " + s.times().get(0) + ", " + days;
             case "SEMANAL" -> "Semanal (" + days + ") a las " + String.join(", ", s.times());
+            case "UNA_VEZ" -> "Una sola vez (no ciclica) el " + s.startDate() + " a las " + String.join(", ", s.times());
             default -> "Diaria a las " + String.join(", ", s.times());
         };
         return text + (s.windowMinutes() == null ? "" : " | duracion maxima advertida " + s.windowMinutes() + " min");

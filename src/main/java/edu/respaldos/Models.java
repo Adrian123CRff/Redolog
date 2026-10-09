@@ -10,7 +10,8 @@ public final class Models {
     public static final List<String> PRIORITIES = List.of("ALTA", "MEDIA", "BAJA");
     public static final List<String> SCOPES = List.of("DATABASE", "TABLESPACE", "DATAFILE", "COMPONENTS");
     public static final List<String> METHODS = List.of("FULL", "LEVEL0", "LEVEL1", "CUMULATIVE");
-    public static final List<String> FREQUENCIES = List.of("DIARIA", "SEMANAL", "INTERVALO");
+    /** UNA_VEZ: no ciclica, se ejecuta solo en la fecha de inicio; las demas se repiten. */
+    public static final List<String> FREQUENCIES = List.of("DIARIA", "SEMANAL", "INTERVALO", "UNA_VEZ");
     public static final List<String> DAYS = List.of("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN");
     public static final String DEFAULT_DESTINATION = "/opt/oracle/backup";
 
@@ -36,6 +37,9 @@ public final class Models {
     /**
      * Estrategia = QUÉ + CÓMO + CUÁNDO + DESTINO. Los campos nuevos admiten null para leer
      * estrategias guardadas antes del enunciado; el constructor les asigna valores por defecto.
+     * tablespacePriorities: prioridad de cada tablespace dentro de la estrategia (clase del 05/10).
+     * onlineRedo: archivar el redo en linea actual antes de respaldar los archived logs.
+     * scriptCode: nombre del archivo .rma de la estrategia (RMA0001...), lo asigna el servicio.
      */
     public record Strategy(String id,
                            // Información general
@@ -50,7 +54,18 @@ public final class Models {
                            String startDate, String frequency, List<String> days, List<String> times,
                            Integer intervalHours, Integer windowMinutes,
                            // Destino
-                           String destination) {
+                           String destination,
+                           // Agregados por la revision del profesor
+                           Map<String, String> tablespacePriorities, Boolean onlineRedo, String scriptCode) {
+        /** Firma anterior, sin los campos agregados por la revision del profesor. */
+        public Strategy(String id, String name, String description, String databaseId, String responsible, String priority, boolean enabled,
+                        String scope, List<String> tablespaces, List<Integer> datafiles, boolean archivelogs, boolean controlfile, Boolean spfile,
+                        String method, boolean compressed, boolean verifyAfter, String startDate, String frequency, List<String> days,
+                        List<String> times, Integer intervalHours, Integer windowMinutes, String destination) {
+            this(id, name, description, databaseId, responsible, priority, enabled, scope, tablespaces, datafiles, archivelogs, controlfile,
+                spfile, method, compressed, verifyAfter, startDate, frequency, days, times, intervalHours, windowMinutes, destination, null, null, null);
+        }
+
         public Strategy {
             id = id == null || id.isBlank() ? UUID.randomUUID().toString() : id;
             require(name != null && !name.isBlank() && name.length() <= 80, "Nombre de estrategia requerido (hasta 80 caracteres).");
@@ -78,8 +93,21 @@ public final class Models {
             for (int file : datafiles) require(file >= 1 && file <= 65533, "Numero de datafile no valido: " + file);
             // Las estrategias anteriores tenian una sola casilla "control file y SPFILE".
             spfile = spfile == null ? controlfile : spfile;
+            // RMAN no copia los redo en linea: se protegen archivando el actual y respaldando el archived log resultante.
+            onlineRedo = onlineRedo != null && onlineRedo;
+            if (onlineRedo) archivelogs = true;
             require(!scope.equals("COMPONENTS") || archivelogs || controlfile || spfile,
                 "Selecciona al menos un componente: archived redo logs, control file o SPFILE.");
+            // Prioridad por tablespace: solo de los tablespaces elegidos y solo si difiere de la prioridad de la estrategia.
+            var levels = new TreeMap<String, String>();
+            if (tablespacePriorities != null)
+                for (var entry : tablespacePriorities.entrySet()) {
+                    if (entry.getKey() == null || entry.getValue() == null) continue;
+                    String ts = entry.getKey().trim().toUpperCase(), level = entry.getValue().trim().toUpperCase();
+                    require(PRIORITIES.contains(level), "Prioridad no valida para el tablespace " + ts + ".");
+                    if (tablespaces.contains(ts) && !level.equals(priority)) levels.put(ts, level);
+                }
+            tablespacePriorities = Collections.unmodifiableMap(levels);
 
             // CÓMO
             require(METHODS.contains(method), "Tipo de respaldo no valido.");
@@ -90,7 +118,7 @@ public final class Models {
             require(FREQUENCIES.contains(frequency), "Frecuencia no valida.");
             startDate = startDate == null || startDate.isBlank() ? LocalDate.now().toString() : startDate;
             try { LocalDate.parse(startDate); } catch (Exception e) { throw new IllegalArgumentException("Fecha de inicio no valida (AAAA-MM-DD)."); }
-            days = days == null || days.isEmpty() || frequency.equals("DIARIA") ? DAYS
+            days = days == null || days.isEmpty() || frequency.equals("DIARIA") || frequency.equals("UNA_VEZ") ? DAYS
                 : days.stream().map(String::toUpperCase).distinct().sorted(Comparator.comparingInt(DAYS::indexOf)).toList();
             require(DAYS.containsAll(days), "Dia de ejecucion no valido.");
             times = times == null ? List.of() : times.stream().distinct().sorted().toList();
@@ -113,7 +141,12 @@ public final class Models {
             while (destination.length() > 1 && destination.endsWith("/")) destination = destination.substring(0, destination.length() - 1);
             require(destination.matches("/[A-Za-z0-9_./-]{0,200}") && !destination.contains(".."),
                 "Destino no valido: usa una ruta absoluta del servidor Oracle sin espacios ni '..'.");
+            scriptCode = scriptCode == null || scriptCode.isBlank() ? null : scriptCode.trim().toUpperCase();
+            require(scriptCode == null || scriptCode.matches("RMA[0-9]{4,6}"), "Codigo de script no valido (RMA0001).");
         }
+
+        /** Prioridad de un tablespace dentro de la estrategia; sin prioridad propia hereda la de la estrategia. */
+        public String priorityOf(String tablespace) { return tablespacePriorities.getOrDefault(tablespace, priority); }
 
         /** Etiqueta RMAN estable derivada del nombre (maximo 30 caracteres). */
         public String tag() {
@@ -127,12 +160,20 @@ public final class Models {
 
         public Strategy withArchivelogs(boolean value) {
             return new Strategy(id, name, description, databaseId, responsible, priority, enabled, scope, tablespaces, datafiles,
-                value, controlfile, spfile, method, compressed, verifyAfter, startDate, frequency, days, times, intervalHours, windowMinutes, destination);
+                value, controlfile, spfile, method, compressed, verifyAfter, startDate, frequency, days, times, intervalHours, windowMinutes, destination,
+                tablespacePriorities, onlineRedo, scriptCode);
         }
 
         public Strategy withVerifyAfter(boolean value) {
             return new Strategy(id, name, description, databaseId, responsible, priority, enabled, scope, tablespaces, datafiles,
-                archivelogs, controlfile, spfile, method, compressed, value, startDate, frequency, days, times, intervalHours, windowMinutes, destination);
+                archivelogs, controlfile, spfile, method, compressed, value, startDate, frequency, days, times, intervalHours, windowMinutes, destination,
+                tablespacePriorities, onlineRedo, scriptCode);
+        }
+
+        public Strategy withScriptCode(String value) {
+            return new Strategy(id, name, description, databaseId, responsible, priority, enabled, scope, tablespaces, datafiles,
+                archivelogs, controlfile, spfile, method, compressed, verifyAfter, startDate, frequency, days, times, intervalHours, windowMinutes, destination,
+                tablespacePriorities, onlineRedo, value);
         }
     }
 

@@ -280,13 +280,15 @@ class BackupServiceTest {
     }
 
     @Test void keepsAnRmaFileForTheStrategyAndRemovesItWhenDeleted() throws Exception {
-        var file = dir.resolve("scripts").resolve(strategy.tag() + "-" + db.container() + ".rma");
+        var file = dir.resolve("scripts").resolve("RMA0001.rma");
         assertEquals(RmanScript.backup(strategy, db), Files.readString(file), "se escribe al guardar");
+        assertEquals("RMA0001", catalog.strategy(strategy.id()).scriptCode());
         service.approve(strategy.id(), "Tester");
         assertEquals(RmanScript.backup(strategy, db), Files.readString(file));
         var changed = strategy.withArchivelogs(false);
         service.save(changed);
         assertEquals(RmanScript.backup(changed, db), Files.readString(file), "refleja la estrategia vigente");
+        assertEquals("RMA0001", catalog.strategy(strategy.id()).scriptCode(), "editar conserva el codigo aunque la interfaz no lo envie");
         service.delete(strategy.id());
         assertFalse(Files.exists(file));
     }
@@ -297,5 +299,59 @@ class BackupServiceTest {
         assertEquals("EXITOSO", e.status());
         assertEquals(RmanScript.backup(strategy, db), Files.readString(dir.resolve("executions").resolve(e.id()).resolve("script.rma")));
         assertFalse(Files.exists(dir.resolve("executions").resolve(e.id()).resolve("script.rman")));
+    }
+
+    @Test void assignsConsecutiveCodesAndPublishesTheFlatCatalog() throws Exception {
+        var second = new Strategy("s2", "Segunda", null, db.id(), null, "BAJA", true, "TABLESPACE", List.of("USERS", "SYSAUX"), null,
+            false, true, false, "FULL", false, false, "2100-01-01", "SEMANAL", List.of("TUE", "FRI"), List.of("02:00", "14:00"), null, null, null,
+            Map.of("USERS", "ALTA"), false, null);
+        service.save(second);
+        assertEquals("RMA0002", catalog.strategy("s2").scriptCode());
+        assertTrue(Files.exists(dir.resolve("scripts/RMA0002.rma")));
+        var rows = FlatCatalog.read(dir).rows();
+        assertEquals(List.of("RMA0001", "RMA0002"), rows.stream().map(r -> r.get("CODIGO")).toList());
+        var row = rows.get(1);
+        assertEquals("scripts/RMA0002.rma", row.get("SCRIPT"));
+        assertEquals("TUE,FRI", row.get("DIAS"));
+        assertEquals("02:00,14:00", row.get("HORAS"));
+        assertEquals("USERS (ALTA), SYSAUX (BAJA) + control file", row.get("ELEMENTOS"));
+        assertEquals("NO", rows.get(0).get("APROBADA"));
+        assertEquals("", rows.get(0).get("HUELLA"));
+        service.approve(strategy.id(), "Tester");
+        var approved = FlatCatalog.read(dir).rows().get(0);
+        assertEquals("SI", approved.get("APROBADA"));
+        assertEquals(RmanScript.hash(RmanScript.backup(strategy, db)), approved.get("HUELLA"));
+        var e = run("BACKUP");
+        var after = FlatCatalog.read(dir).rows().get(0);
+        assertEquals("EXITOSO", after.get("RESULTADO"));
+        assertEquals("executions/" + e.id() + "/output.log", after.get("LOG"));
+        assertFalse(after.get("PIEZAS").isBlank());
+        assertEquals("INTERNO", FlatCatalog.read(dir).scheduler());
+    }
+
+    @Test void importsWhatTheExternalExecutorRanAndWarnsTheDbaOfFailures() throws Exception {
+        service.approve(strategy.id(), "Tester");
+        var ejecutor = new Ejecutor(dir, (container, code, script, log) -> {
+            Files.writeString(log, "RMAN-03009: failure of backup command on d1 channel\nORA-19504: failed to create file\n");
+            return new Rman.Result(1, Files.readString(log), false);
+        }, BackupService.ZONE_ID);
+        var result = ejecutor.now("RMA0001");
+        assertEquals("FALLIDO", result.get("RESULTADO"));
+        assertEquals("FALLIDO", FlatCatalog.read(dir).rows().get(0).get("RESULTADO"), "el ejecutor actualiza el catalogo");
+        service.state();
+        var e = catalog.execution(result.get("ID"));
+        assertEquals("FALLIDO", e.status());
+        assertTrue(e.message().contains("ORA-19504"));
+        assertTrue(Files.readString(dir.resolve("executions").resolve(e.id()).resolve("output.log")).contains("ORA-19504"));
+        assertEquals(1, notified.size(), "el fallo del ejecutor tambien se avisa");
+        service.state();
+        assertEquals(1, catalog.executions().size(), "no se importa dos veces");
+    }
+
+    @Test void externalSchedulerLeavesTheTimesToTheExecutor() throws Exception {
+        service.close();
+        service = new BackupService(catalog, dir, rman, notified::add, false);
+        assertEquals("EXTERNO", FlatCatalog.read(dir).scheduler());
+        assertEquals("EXTERNO", service.state().get("scheduler"));
     }
 }
