@@ -169,18 +169,25 @@ public final class Ejecutor {
             var result = ejecutor.now(options.get("--ahora").toUpperCase());
             System.exit(List.of("EXITOSO", "CON_ADVERTENCIAS").contains(result.get("RESULTADO")) ? 0 : 1);
         }
-        Models.require(Files.exists(runtime.resolve(FlatCatalog.FILE)), "No existe " + runtime.resolve(FlatCatalog.FILE) + ". Abre la aplicacion una vez para generarlo.");
-        if (!"EXTERNO".equals(FlatCatalog.read(runtime).scheduler()) && !options.containsKey("--forzar"))
-            throw new IllegalStateException("El catalogo indica Planificador: INTERNO (la aplicacion ya ejecuta los horarios). "
-                + "Inicia la aplicacion con -Dapp.planificador=externo para que este ejecutor sea el unico que respalda, o usa --forzar.");
+        boolean force = options.containsKey("--forzar");
         Files.createDirectories(ejecutor.directory());
         var lockChannel = java.nio.channels.FileChannel.open(ejecutor.directory().resolve("ejecutor.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         if (lockChannel.tryLock() == null) throw new IllegalStateException("Ya hay un ejecutor en marcha sobre este catalogo.");
         System.out.println("Ejecutor RMAN: lee " + runtime.resolve(FlatCatalog.FILE) + " cada 20 s. Ctrl+C para detenerlo.");
         Instant last = Instant.now();
+        String waiting = null;
         while (true) {
             Instant now = Instant.now();
-            try { ejecutor.tick(last, now); }
+            try {
+                // Mientras no haya catalogo o la aplicacion tenga el planificador interno, espera: nunca respaldan los dos.
+                String reason = !Files.exists(runtime.resolve(FlatCatalog.FILE)) ? "No existe el catalogo; inicia la aplicacion para generarlo."
+                    : !force && !"EXTERNO".equals(FlatCatalog.read(runtime).scheduler()) ? "El catalogo indica Planificador: INTERNO (la aplicacion ejecuta los horarios). Esperando..."
+                    : null;
+                if (reason != null && !reason.equals(waiting)) System.out.println(reason);
+                if (reason == null && waiting != null) System.out.println("Catalogo listo con planificador EXTERNO: el ejecutor corre los horarios.");
+                waiting = reason;
+                if (reason == null) ejecutor.tick(last, now);
+            }
             catch (Exception e) { System.err.println("Error del ejecutor: " + e.getMessage()); }
             last = now;
             Thread.sleep(20_000);

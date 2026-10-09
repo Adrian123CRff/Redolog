@@ -40,8 +40,10 @@ public final class Main {
         // La demostracion publica nunca envia correos; en modo local el correo existe solo si hay SMTP configurado.
         Mailer mailer = simulation ? null : MailConfig.fromEnvironment().map(SmtpMailer::new).orElse(null);
         Notifier notifier = mailer == null ? Notifier.NONE : new EmailNotifier(catalog, mailer, runtime, 3, Duration.ofSeconds(10));
-        // Planificador externo: la aplicacion no ejecuta horarios; lo hace el programa Ejecutor leyendo el catalogo plano.
-        boolean external = "externo".equalsIgnoreCase(System.getProperty("app.planificador", Objects.requireNonNullElse(System.getenv("GESTOR_PLANIFICADOR"), "interno")));
+        // Planificador externo (por defecto en modo local, como lo pidio el profesor): la aplicacion no ejecuta horarios;
+        // lo hace el programa Ejecutor leyendo el catalogo plano. Robot y simulacion siguen con el planificador interno.
+        String planner = System.getProperty("app.planificador", Objects.requireNonNullElse(System.getenv("GESTOR_PLANIFICADOR"), robot || simulation ? "interno" : "externo"));
+        boolean external = "externo".equalsIgnoreCase(planner);
         if (external && (robot || simulation)) throw new IllegalStateException("El planificador externo no se combina con el modo robot ni con la simulacion.");
         var service = new BackupService(catalog, runtime, simulation ? simulated : new Rman(), notifier, !external);
         if (robot) {

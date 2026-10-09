@@ -71,9 +71,16 @@ docker start rman-lab
 java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.port=8787" -jar "target/gestor-rman-0.1.0.jar"
 ```
 
-Esperar a que Oracle este listo antes de ejecutar respaldos. La terminal de Java
-debe permanecer abierta para ejecutar los horarios; Ctrl+C detiene la aplicacion,
-no el contenedor Oracle. No iniciarla dos veces sobre el mismo catalogo.
+Y en otra terminal, el Ejecutor, que es quien corre los horarios leyendo el catalogo:
+
+```powershell
+java -cp "target/gestor-rman-0.1.0.jar" edu.respaldos.Ejecutor
+```
+
+Esperar a que Oracle este listo antes de ejecutar respaldos. La terminal del
+Ejecutor debe permanecer abierta para ejecutar los horarios; Ctrl+C detiene el
+programa, no el contenedor Oracle. No iniciar dos veces la aplicacion ni el
+Ejecutor sobre el mismo catalogo.
 
 ## Correo de alertas al DBA
 

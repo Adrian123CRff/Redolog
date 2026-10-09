@@ -329,7 +329,7 @@ function renderCatalog() {
   $('#catalog-path').textContent = catalog.path;
   $('#catalog-scheduler').textContent = catalog.scheduler === 'EXTERNO'
     ? 'Planificador EXTERNO: los horarios los ejecuta el programa Ejecutor leyendo este archivo (java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor).'
-    : 'Planificador INTERNO: la aplicación ejecuta los horarios. Para que los ejecute el programa Ejecutor, inicia la aplicación con -Dapp.planificador=externo.';
+    : 'Planificador INTERNO: la aplicación ejecuta los horarios (se inició con -Dapp.planificador=interno o en modo robot). Por defecto los ejecuta el programa Ejecutor.';
   const days = v => v.split(',').filter(Boolean).map(d => DAYS.find(x => x[0] === d)?.[1] || d).join(' ');
   $('#catalog-body').innerHTML = catalog.rows.length ? catalog.rows.map(r => {
     const when = r.FRECUENCIA === 'INTERVALO' ? `Cada ${r.INTERVALO_H} h desde ${r.HORAS}` : r.FRECUENCIA === 'UNA_VEZ' ? `Una vez: ${r.INICIO} ${r.HORAS}` : `${r.DIAS.split(',').length === 7 ? 'Todos los días' : days(r.DIAS)} · ${r.HORAS || 'sin hora'}`;

@@ -49,22 +49,27 @@ ejecutor que las **corre**. Asi queda:
 
 ### Como correrlo (Windows, desde la carpeta del proyecto)
 
-Para que los horarios los ejecute solo el ejecutor, la aplicacion se inicia con el
-planificador externo:
+Como lo especifico el profesor, en modo local la aplicacion ya no ejecuta horarios
+(planificador EXTERNO por defecto): solo crea estrategias, scripts y el catalogo.
+Se inicia como siempre:
 
-    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.planificador=externo" -jar target/gestor-rman-0.1.0.jar
+    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" -jar target/gestor-rman-0.1.0.jar
 
-Y en otra ventana de PowerShell:
+Y en otra ventana de PowerShell, el ejecutor, que es quien corre los horarios:
 
     java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor
+
+`scripts/preparar-entorno.ps1 -Iniciar` abre las dos cosas. Si el ejecutor arranca
+antes que la aplicacion, espera a que exista el catalogo.
 
 Para correr una estrategia de inmediato desde la terminal (por ejemplo, la que fallo):
 
     java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor --ahora RMA0001
 
-Si la aplicacion se inicia como siempre (planificador interno), ella misma ejecuta
-los horarios y el ejecutor se niega a arrancar para no respaldar dos veces lo mismo.
-`--ahora` funciona en los dos modos.
+Si se quiere el comportamiento anterior (la aplicacion ejecuta los horarios), se
+inicia con `-Dapp.planificador=interno`; el modo robot tambien usa el planificador
+interno. En ese caso el ejecutor queda esperando y no respalda, para no hacer dos
+veces lo mismo. `--ahora` funciona en los dos modos.
 
 ## Como mostrarlo en la presentacion
 

@@ -123,10 +123,10 @@ base, prioridad, que respalda, dias, horas, si esta aprobada (con la huella del
 script), ultima ejecucion, resultado, piezas y log. Se ve en la vista **Catalogo**.
 
 El programa `edu.respaldos.Ejecutor` lee ese archivo y ejecuta con RMAN las
-estrategias que tocan, pidiendole el log, y actualiza el catalogo. Para usarlo en
-lugar del planificador de la aplicacion:
+estrategias que tocan, pidiendole el log, y actualiza el catalogo. Como lo pidio el
+profesor, en modo local es el ejecutor (no la aplicacion) quien corre los horarios:
 
-    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.planificador=externo" -jar target/gestor-rman-0.1.0.jar
+    java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" -jar target/gestor-rman-0.1.0.jar
     java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor              (en otra terminal)
     java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor --ahora RMA0001
 

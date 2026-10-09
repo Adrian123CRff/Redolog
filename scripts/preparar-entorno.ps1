@@ -113,11 +113,14 @@ try {
 Paso 'Listo'
 Write-Host 'Para iniciar la aplicacion desde la carpeta del proyecto:'
 Write-Host '  java "-Djdk.net.unixdomain.tmpdir=runtime/app.lock" "-Dapp.mode=local" "-Dapp.port=8787" -jar "target/gestor-rman-0.1.0.jar"'
+Write-Host 'Y en otra terminal, el Ejecutor que corre los horarios leyendo el catalogo:'
+Write-Host '  java -cp "target/gestor-rman-0.1.0.jar" edu.respaldos.Ejecutor'
 Write-Host 'Abre http://127.0.0.1:8787 en este equipo.'
 if ($Iniciar) {
-    Write-Host 'Aplicacion en esta terminal. Ctrl+C para detenerla; no detiene Oracle.'
+    Write-Host 'Aplicacion en esta terminal y Ejecutor en otra ventana. Ctrl+C para detenerlos; no detiene Oracle.'
     Push-Location $root
     try {
+        Start-Process powershell -WorkingDirectory $root -ArgumentList '-NoExit', '-Command', 'java -cp "target/gestor-rman-0.1.0.jar" edu.respaldos.Ejecutor'
         & java '-Djdk.net.unixdomain.tmpdir=runtime/app.lock' '-Dapp.mode=local' '-Dapp.port=8787' -jar 'target/gestor-rman-0.1.0.jar'
         if ($LASTEXITCODE -ne 0) { throw 'La aplicacion no termino correctamente. Revisa el mensaje anterior; no se elimino el catalogo.' }
     } finally {
