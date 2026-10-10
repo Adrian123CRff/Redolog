@@ -4,6 +4,9 @@ Investigacion pedida en la clase del 05/10/2026 para el laboratorio de caida de 
 base. Cubre solo fallos de **medio fisico** (se pierde o se dana un archivo de la
 base), no fallos logicos (un DELETE equivocado, un DROP TABLE).
 
+Para el dia del laboratorio: [hoja-rapida-lunes.md](hoja-rapida-lunes.md) (diagnostico,
+que caso es y como cerrar, incluidos DROP TABLE y DELETE equivocados).
+
 Supuestos del laboratorio: Oracle Free en Docker (`rman-lab`), contenedor CDB con
 el PDB `FREEPDB1`, base en **ARCHIVELOG**, autobackup del control file activado y
 respaldos en `/opt/oracle/backup`. RMAN es *Recovery* Manager: las estrategias se
