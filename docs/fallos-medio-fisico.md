@@ -28,6 +28,12 @@ su ultima ejecucion, las piezas y el log.
 
 ## Tabla de escenarios
 
+Estado del laboratorio desde el 10/10/2026: cada grupo de redo tiene dos miembros,
+`/opt/oracle/oradata/FREE/redo0N.log` y `/opt/oracle/oradata/espejo/redo0Nb.log`
+(lo configura `scripts/preparar-entorno.ps1`). Si se borra un solo archivo de redo,
+incluso del grupo CURRENT, la base sigue con el otro miembro: aplica el escenario 5,
+sin perdida. El escenario 6 solo ocurre si se pierden los dos miembros del grupo.
+
 Riesgo: impacto si ocurre y no hay estrategia. **Critico** = la base se detiene;
 **Alto** = una parte de los datos queda inaccesible; **Medio** = la base sigue,
 pero queda expuesta; **Bajo** = se corrige sin perder datos ni servicio.

@@ -98,6 +98,18 @@ if ($destino -notmatch 'oradata/FREE/archivelog') {
     SqlLab "whenever sqlerror exit failure`nalter system set log_archive_dest_1='LOCATION=/opt/oracle/oradata/FREE/archivelog' scope=both;`nexit;" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo configurar el destino de los archived logs.' }
 }
+# Redo multiplexado: un segundo miembro por grupo en otra carpeta, para que perder un archivo de redo
+# (incluso del grupo CURRENT) no cause perdida de datos.
+docker exec -u oracle $contenedor mkdir -p /opt/oracle/oradata/espejo
+$sinEspejo = (SqlLab "set pages 0 feedback off heading off`nselect group# from v`$log where members < 2 order by 1;`nexit;").Trim() -split '\s+' | Where-Object { $_ -match '^\d+$' }
+foreach ($grupo in $sinEspejo) {
+    SqlLab "whenever sqlerror exit failure`nalter database add logfile member '/opt/oracle/oradata/espejo/redo0${grupo}b.log' to group $grupo;`nexit;" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo multiplexar el grupo de redo $grupo." }
+}
+if ($sinEspejo) {
+    SqlLab "alter system switch logfile;`nalter system switch logfile;`nalter system switch logfile;`nalter system checkpoint;`nexit;" | Out-Null
+    Write-Host "Redo multiplexado en /opt/oracle/oradata/espejo (grupos $($sinEspejo -join ', '))."
+}
 # El autobackup del control file queda en la carpeta de respaldos y no dentro del contenedor.
 "CONFIGURE CONTROLFILE AUTOBACKUP FORMAT FOR DEVICE TYPE DISK TO '/opt/oracle/backup/%F';`nEXIT;" | docker exec -i -u oracle $contenedor rman target / | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'No se pudo configurar el autobackup del control file.' }
