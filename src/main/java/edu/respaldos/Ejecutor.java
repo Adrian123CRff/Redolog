@@ -37,7 +37,15 @@ public final class Ejecutor {
         var due = new ArrayList<Map.Entry<Map<String, String>, Instant>>();
         for (var row : FlatCatalog.read(runtime).rows()) {
             if (!"SI".equals(row.get("ACTIVA")) || !"SI".equals(row.get("APROBADA"))) continue;
-            try { for (var at : Schedules.occurrences(schedule(row), from, to, zone, 20)) due.add(Map.entry(row, at)); }
+            try {
+                // Si el equipo estuvo apagado o suspendido, varias horas quedan atrasadas: se corre una sola vez,
+                // la mas reciente, en lugar de repetir seguidos respaldos identicos que solo gastan disco.
+                var occurrences = Schedules.occurrences(schedule(row), from, to, zone, 1000);
+                if (occurrences.isEmpty()) continue;
+                if (occurrences.size() > 1)
+                    System.out.println(row.get("CODIGO") + ": " + (occurrences.size() - 1) + " horario(s) anteriores no se ejecutaron (equipo apagado o suspendido); se ejecuta solo el mas reciente.");
+                due.add(Map.entry(row, occurrences.get(occurrences.size() - 1)));
+            }
             catch (IllegalArgumentException e) { System.err.println("Linea del catalogo no valida (" + row.get("CODIGO") + "): " + e.getMessage()); }
         }
         due.sort(Comparator.<Map.Entry<Map<String, String>, Instant>, Instant>comparing(Map.Entry::getValue)

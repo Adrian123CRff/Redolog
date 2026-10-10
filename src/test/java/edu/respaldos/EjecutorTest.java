@@ -58,6 +58,14 @@ class EjecutorTest {
         assertTrue(ejecutor(false).tick(at("2026-10-06T02:01"), at("2026-10-06T03:00")).isEmpty(), "no repite la misma hora");
     }
 
+    @Test void afterSleepRunsOnlyTheLatestMissedOccurrence() throws Exception {
+        FlatCatalog.write(dir, "EXTERNO", List.of(line("RMA0001", "ALTA", "SI", "SI", "MON,TUE,WED,THU,FRI,SAT,SUN", "13:00,15:00,18:00,21:00")));
+        // Equipo suspendido del viernes 09/10 a las 13:15 al sabado 10/10 a las 16:07: cinco horarios atrasados.
+        var results = ejecutor(false).tick(at("2026-10-09T13:15"), at("2026-10-10T16:07"));
+        assertEquals(List.of("RMA0001"), ran, "un solo respaldo, no cinco seguidos");
+        assertEquals(at("2026-10-10T15:00").toString(), results.get(0).get("PROGRAMADA"));
+    }
+
     @Test void failureIsRecordedWithRmanErrors() throws Exception {
         FlatCatalog.write(dir, "EXTERNO", List.of(line("RMA0001", "ALTA", "SI", "SI", "TUE", "02:00")));
         var result = ejecutor(true).now("rma0001".toUpperCase());
