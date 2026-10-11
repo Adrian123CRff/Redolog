@@ -140,9 +140,18 @@ class RecoveryAdvisorTest {
         assertTrue(text.contains("REMAP TABLE LAB_DEMO.PEDIDOS:PEDIDOS_RECUPERADA;"));
     }
 
+    @Test void whatWasAlreadySoInTheSnapshotIsNotReported() {
+        var f = facts(OPEN + "USR|FREEPDB1|QA_RMAN|LOCKED\nUSR|FREEPDB1|LAB_DEMO|LOCKED\n").snapshot(SNAPSHOT + "USR|FREEPDB1|QA_RMAN|LOCKED\n");
+        var text = all(RecoveryAdvisor.analyze(f));
+        assertTrue(text.contains("ALTER USER LAB_DEMO ACCOUNT UNLOCK;"), "bloqueado despues de la foto");
+        assertFalse(text.contains("QA_RMAN"), "ya estaba bloqueado en la foto");
+    }
+
     @Test void lockedUserAndOfflineTablespaceAndNoArchivelog() {
         var text = all(RecoveryAdvisor.analyze(facts(OPEN.replace("ARCHIVELOG", "NOARCHIVELOG")
-            + "USR|FREEPDB1|LAB_DEMO|LOCKED\nTS|FREEPDB1|USERS|OFFLINE\n")));
+            + "USR|FREEPDB1|LAB_DEMO|LOCKED\nTS|FREEPDB1|USERS|OFFLINE\nROTAB|FREEPDB1|LAB_DEMO.PEDIDOS\nRMANCFG|CONTROLFILE AUTOBACKUP|OFF\n")));
+        assertTrue(text.contains("ALTER TABLE LAB_DEMO.PEDIDOS READ WRITE;"));
+        assertTrue(text.contains("CONFIGURE CONTROLFILE AUTOBACKUP ON;"));
         assertTrue(text.contains("ALTER USER LAB_DEMO ACCOUNT UNLOCK;"));
         assertTrue(text.contains("ALTER TABLESPACE USERS ONLINE;"));
         assertTrue(text.contains("ALTER DATABASE ARCHIVELOG;"));

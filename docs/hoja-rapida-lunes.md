@@ -18,7 +18,9 @@ Abrir dos terminales de PowerShell:
        java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor --ahora RMA0002   # base completa nivel 0
        java -cp target/gestor-rman-0.1.0.jar edu.respaldos.Ejecutor --ahora RMA0001   # LAB_DATOS + archived logs + control file
 
-4. "Foto" del antes, en SQL*Plus (anotarla):
+4. "Foto" del antes: en la app, **Bases de datos > Tomar foto del estado** (guarda el SCN
+   y las filas de cada tabla; el diagnostico la usa para detectar filas o tablas perdidas).
+   Para anotarla tambien a mano, en SQL*Plus:
 
        SELECT dbid, current_scn, TO_CHAR(SYSDATE,'YYYY-MM-DD HH24:MI:SS') FROM v$database;
        ALTER SESSION SET CONTAINER = FREEPDB1;
@@ -31,7 +33,11 @@ Abrir dos terminales de PowerShell:
 
 ## Paso 1: diagnosticar (2 minutos)
 
-En SQL*Plus, en este orden. Lo primero que falle ya dice mucho:
+En la app: **Bases de datos > Diagnosticar fallos**. Revisa todo lo de abajo (y los
+archivos que faltan en disco) y propone el paso a paso con los comandos para copiar.
+Solo lee: los comandos los ejecuta el DBA. Despues de cada paso que de un error nuevo,
+volver a diagnosticar. Si la app no responde, hacerlo a mano en SQL*Plus, en este orden.
+Lo primero que falle ya dice mucho:
 
     SELECT status FROM v$instance;                       -- STARTED / MOUNTED / OPEN
     SELECT name, open_mode, log_mode FROM v$database;
@@ -88,9 +94,17 @@ Todo en SQL*Plus dentro de FREEPDB1 (`ALTER SESSION SET CONTAINER = FREEPDB1;`).
         MINUS SELECT * FROM LAB_DEMO.PEDIDOS;
       COMMIT;
 
-- **DROP TABLE ... PURGE o TRUNCATE**: no hay papelera ni undo. Queda la recuperacion
-  a un punto en el tiempo del tablespace o de la base con RMAN (`SET UNTIL TIME`),
-  que tambien deshace lo posterior. Explicar el costo antes de hacerlo.
+- **DROP TABLE ... PURGE o TRUNCATE**: no hay papelera ni undo. RMAN puede recuperar
+  solo esa tabla desde los respaldos, con otro nombre, sin tocar el resto de la base
+  (el diagnostico arma el comando con el SCN de la foto):
+
+      RECOVER TABLE LAB_DEMO.PEDIDOS OF PLUGGABLE DATABASE FREEPDB1
+        UNTIL SCN <scn de la foto>
+        AUXILIARY DESTINATION '/opt/oracle/oradata/aux'
+        REMAP TABLE LAB_DEMO.PEDIDOS:PEDIDOS_RECUPERADA;
+
+  La alternativa es la recuperacion a un punto en el tiempo del tablespace o de la base
+  (`SET UNTIL TIME`), que tambien deshace lo posterior. Explicar el costo antes de hacerlo.
 
 ## Paso 3: cerrar
 

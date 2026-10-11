@@ -17,6 +17,7 @@ public final class RecoveryAdvisor {
     public static final String PS = "PowerShell", SQL = "SQL*Plus", RMAN = "RMAN", APP = "Gestor";
     private static final Set<String> SYSTEM_TS = Set.of("SYSTEM", "UNDOTBS1", "SYSAUX");
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+    private static final List<String> BASELINE = List.of("USR", "TS", "ROTAB");
 
     public record Step(String where, String text, String commands) {}
     public record Finding(String severity, String title, String evidence, List<Step> steps) {}
@@ -55,6 +56,13 @@ public final class RecoveryAdvisor {
         public Facts snapshot(String text) { snapshot = new Facts(container).parse(text); return this; }
 
         List<String[]> rows(String tag) { return rows.getOrDefault(tag, List.of()); }
+        /** Filas que no estaban igual en la foto: lo que cambio desde entonces. */
+        List<String[]> changed(String tag) {
+            if (snapshot == null) return rows(tag);
+            var before = new HashSet<String>();
+            snapshot.rows(tag).forEach(r -> before.add(String.join("|", r)));
+            return rows(tag).stream().filter(r -> !before.contains(String.join("|", r))).toList();
+        }
         String value(String tag, int i) { var r = rows(tag); return r.isEmpty() || r.get(0).length <= i ? null : r.get(0)[i]; }
         boolean running() { return containerState.startsWith("running"); }
         boolean idle() { return rows("INST").isEmpty(); }
@@ -108,9 +116,12 @@ public final class RecoveryAdvisor {
         select 'LOGF|'||group#||'|'||nvl(status,'OK')||'|'||member from v$logfile order by group#, member;
         select 'DEST|'||dest_name||'|'||status||'|'||replace(nvl(error,'-'),'|','/') from v$archive_dest where status in ('ERROR','DISABLED','BAD PARAM') and dest_id=1;
         select 'TS|'||c.name||'|'||t.tablespace_name||'|'||t.status from cdb_tablespaces t join v$containers c on c.con_id=t.con_id
-          where t.status<>'ONLINE' and c.name<>'PDB$SEED' order by 2,3;
+          where t.status<>'ONLINE' and c.name<>'PDB$SEED' order by c.name, t.tablespace_name;
         select 'USR|'||c.name||'|'||u.username||'|'||u.account_status from cdb_users u join v$containers c on c.con_id=u.con_id
-          where u.oracle_maintained='N' and u.account_status<>'OPEN' and c.name<>'PDB$SEED' order by 2,3;
+          where u.oracle_maintained='N' and u.account_status<>'OPEN' and c.name<>'PDB$SEED' order by c.name, u.username;
+        select 'ROTAB|'||c.name||'|'||t.owner||'.'||t.table_name from cdb_tables t join v$containers c on c.con_id=t.con_id
+          join cdb_users u on u.username=t.owner and u.con_id=t.con_id where t.read_only='YES' and u.oracle_maintained='N' order by c.name, t.owner, t.table_name;
+        select 'RMANCFG|'||name||'|'||value from v$rman_configuration where name='CONTROLFILE AUTOBACKUP';
         select 'BIN|'||c.name||'|'||b.owner||'|'||b.original_name||'|'||b.object_name||'|'||b.droptime from cdb_recyclebin b
           join v$containers c on c.con_id=b.con_id where b.type='TABLE' and b.can_undrop='YES' order by b.droptime desc fetch first 30 rows only;
         exit;
@@ -181,6 +192,8 @@ public final class RecoveryAdvisor {
         text.append("DBID|").append(f.value("DB", 3)).append('\n');
         long total = 0;
         for (var r : f.rows("CNT")) { text.append(String.join("|", r)).append('\n'); total += Long.parseLong(r[3]); }
+        // Lo que ya estaba asi antes (usuarios de prueba bloqueados, tablespaces de solo lectura) no se informa como fallo.
+        for (String tag : BASELINE) for (var r : f.rows(tag)) text.append(String.join("|", r)).append('\n');
         Files.writeString(dir.resolve("foto.txt"), text, StandardCharsets.UTF_8);
         return Map.of("takenAt", f.value("NOW", 1), "scn", f.value("DB", 4), "tables", f.rows("CNT").size(), "rows", total);
     }
@@ -418,7 +431,7 @@ public final class RecoveryAdvisor {
                 step(PS, "Comprobar que la carpeta exista y tenga espacio.", "docker exec -u oracle " + c + " mkdir -p /opt/oracle/oradata/FREE/archivelog\ndocker exec -u oracle " + c + " df -h /opt/oracle/oradata"),
                 step(SQL, "Reactivar el destino y archivar.", "ALTER SYSTEM SET log_archive_dest_1='LOCATION=/opt/oracle/oradata/FREE/archivelog' SCOPE=BOTH;\nALTER SYSTEM SET log_archive_dest_state_1=ENABLE SCOPE=BOTH;\nALTER SYSTEM ARCHIVE LOG CURRENT;"))));
         }
-        for (var t : f.rows("TS")) {
+        for (var t : f.changed("TS")) {
             if (handledTs.contains(t[1] + ":" + t[2]) || handledPdbs.contains(t[1])) continue;
             String session = t[1].equals("CDB$ROOT") ? "" : "ALTER SESSION SET CONTAINER = " + t[1] + ";\n", target = t[1].equals("CDB$ROOT") ? t[2] : t[1] + ":" + t[2];
             if (t[3].equals("OFFLINE"))
@@ -428,7 +441,15 @@ public final class RecoveryAdvisor {
             else if (t[3].equals("READ ONLY"))
                 out.add(new Finding("MEDIO", "El tablespace " + target + " esta en solo lectura", "Si no debia estarlo:", List.of(step(SQL, "Habilitar escritura.", session + "ALTER TABLESPACE " + t[2] + " READ WRITE;"))));
         }
-        var users = f.rows("USR");
+        for (var t : f.changed("ROTAB")) {
+            String session = t[1].equals("CDB$ROOT") ? "" : "ALTER SESSION SET CONTAINER = " + t[1] + ";\n";
+            out.add(new Finding("MEDIO", "La tabla " + t[2] + " esta en solo lectura", "Las inserciones y cambios fallan con ORA-12081.", List.of(
+                step(SQL, "Habilitar escritura (si no debia estar en solo lectura).", session + "ALTER TABLE " + t[2] + " READ WRITE;"))));
+        }
+        if (f.rows("RMANCFG").stream().anyMatch(r -> r[2].strip().equalsIgnoreCase("OFF")))
+            out.add(new Finding("MEDIO", "El autobackup del control file esta desactivado", "Sin el, perder los control files obliga a buscar una pieza a mano.", List.of(
+                step(RMAN, "Reactivarlo y dejar una copia ya.", "CONFIGURE CONTROLFILE AUTOBACKUP ON;\nBACKUP CURRENT CONTROLFILE;"))));
+        var users = f.changed("USR");
         if (!users.isEmpty()) {
             var sql = new StringBuilder();
             String last = null;
