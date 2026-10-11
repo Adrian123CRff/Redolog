@@ -330,3 +330,14 @@ td .link-button { font-size: 11px; text-align: left; }
 .ts-priorities { display: grid; gap: 6px; margin-top: 8px; }
 .ts-priorities .ts-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .ts-priorities select { width: auto; }
+
+/* Diagnostico de recuperacion */
+.recovery-consoles { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin: 14px 0 4px; }
+.finding { border: 1px solid var(--line); background: white; border-radius: 6px; padding: 14px 16px; margin: 12px 0; }
+.finding-head { display: flex; align-items: center; gap: 10px; }
+.finding summary { cursor: pointer; font-size: 13px; }
+.finding pre.evidence { min-height: 0; max-height: 30vh; margin-top: 10px; padding: 10px 12px; background: #f3f5f4; color: #33403d; white-space: pre-wrap; overflow-wrap: anywhere; }
+.steps { margin: 12px 0 0; padding-left: 22px; display: grid; gap: 10px; font-size: 13px; }
+.code-block { position: relative; margin-top: 6px; }
+.code-block pre { min-height: 0; max-height: none; padding: 10px 44px 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.code-block .icon-button { position: absolute; top: 4px; right: 4px; background: #2c3a3c; color: #d1e2d9; border-color: #3b4b4d; }

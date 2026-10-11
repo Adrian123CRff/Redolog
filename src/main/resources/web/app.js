@@ -384,8 +384,52 @@ function renderDatabases() {
       <div class="database-info">${body}</div><small class="muted">${st ? 'Comprobada ' + formatDate(st.checkedAt) : ''}</small>
       <small class="muted">${mailLine(d)}</small>
       <button class="secondary" data-action="diagnose" data-id="${esc(d.id)}">${icon('plug-zap')}Comprobar conexión</button>
+      ${state.mode === 'SIMULACION' ? '' : `<button class="secondary" data-action="recovery" data-id="${esc(d.id)}">${icon('stethoscope')}Diagnosticar fallos</button>
+      <button class="secondary" data-action="snapshot" data-id="${esc(d.id)}" title="Guarda cuántas filas tiene cada tabla para detectar después filas o tablas perdidas">${icon('camera')}Tomar foto del estado</button>`}
       ${d.dbaEmail && state.mailConfigured ? `<button class="secondary" data-action="mailtest" data-id="${esc(d.id)}">${icon('mail')}Enviar correo de prueba</button>` : ''}</article>`;
   }).join('');
+}
+
+// ---------------- DIAGNOSTICO DE RECUPERACION ----------------
+const SEVERITY = {CRITICO: ['Crítico', 'bad'], ALTO: ['Alto', 'serious'], MEDIO: ['Medio', 'warn'], BAJO: ['Bajo', 'info'], INFO: ['Información', 'info'], OK: ['Sin fallos', 'good']};
+let recovery = {id: null, report: null};
+const codeBlock = text => `<div class="code-block"><pre>${esc(text)}</pre><button class="icon-button" data-copy="${esc(text)}" title="Copiar" aria-label="Copiar">${icon('copy')}</button></div>`;
+async function openRecovery(id, buttonEl) {
+  if (buttonEl) { buttonEl.innerHTML = icon('loader-circle') + 'Diagnosticando...'; icons(); }
+  try {
+    recovery = {id, report: await api('recovery/diagnose', {databaseId: id})};
+    renderRecovery();
+    if (!$('#recovery-dialog').open) $('#recovery-dialog').showModal();
+  } finally { renderDatabases(); icons(); }
+}
+function renderRecovery() {
+  const r = recovery.report;
+  $('#recovery-title').textContent = dbName(recovery.id) + ' · ' + r.checkedAt.replace('T', ' ');
+  $('#recovery-facts').innerHTML = Object.entries(r.summary).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  $('#recovery-consoles').innerHTML = Object.entries(r.consoles).map(([k, v]) => `<div><small class="muted">Abrir ${esc(k)} desde PowerShell</small>${codeBlock(v)}</div>`).join('');
+  $('#recovery-findings').innerHTML = r.findings.map((f, i) => {
+    const [label, cls] = SEVERITY[f.severity] || [f.severity, ''];
+    return `<article class="finding"><div class="finding-head"><span class="badge ${cls}">${esc(label)}</span><strong>${i + 1}. ${esc(f.title)}</strong></div>
+      ${f.evidence ? `<pre class="evidence">${esc(f.evidence)}</pre>` : ''}
+      ${f.steps.length ? `<ol class="steps">${f.steps.map(s => `<li><span class="badge">${esc(s.where)}</span> ${esc(s.text)}${s.commands ? codeBlock(s.commands) : ''}</li>`).join('')}</ol>` : ''}</article>`;
+  }).join('')
+    + (r.alertLog.length ? `<details class="finding"><summary>Últimos errores del alert log (${r.alertLog.length})</summary><pre class="evidence">${esc(r.alertLog.join('\n'))}</pre></details>` : '')
+    + `<p class="muted">Informe guardado en ${esc(r.savedTo)}</p>`;
+  icons();
+}
+function recoveryText() {
+  const r = recovery.report, lines = [`DIAGNOSTICO DE RECUPERACION - ${dbName(recovery.id)} - ${r.checkedAt}`, 'Solo lectura: no se restauro ni se cambio nada.', ''];
+  Object.entries(r.summary).forEach(([k, v]) => lines.push(`${k}: ${v}`));
+  r.findings.forEach((f, i) => {
+    lines.push('', `${i + 1}. [${f.severity}] ${f.title}`);
+    if (f.evidence) lines.push('   ' + f.evidence.replaceAll('\n', '\n   '));
+    f.steps.forEach((s, n) => { lines.push(`   ${n + 1}) ${s.where}: ${s.text}`); if (s.commands) lines.push('      ' + s.commands.replaceAll('\n', '\n      ')); });
+  });
+  return lines.join('\n') + '\n';
+}
+async function takeSnapshot(id) {
+  const r = await api('recovery/snapshot', {databaseId: id});
+  toast(`Foto del estado guardada (${r.takenAt}): ${r.tables} tablas, ${r.rows} filas, SCN ${r.scn}.`);
 }
 
 function mailLine(d) {
@@ -700,6 +744,8 @@ document.body.addEventListener('click', async e => {
     if (action === 'validate') await runOperation(id, 'VALIDATE');
     if (action === 'detail') await openExecution(id);
     if (action === 'diagnose') await diagnose(id, b);
+    if (action === 'recovery') await openRecovery(id, b);
+    if (action === 'snapshot') await takeSnapshot(id);
     if (action === 'mailtest') toast('Correo de prueba enviado a ' + (await api('mail/test', {databaseId: id})).sentTo + '.');
   } catch (error) { toast(error.message, true); }
   finally { b.disabled = false; }
@@ -719,6 +765,22 @@ $('#timeline').addEventListener('focusout', () => tip.classList.add('hidden'));
 $('#timeline').addEventListener('click', e => { const m = e.target.closest('.mark[data-execution]'); if (m) openExecution(m.dataset.execution).catch(err => toast(err.message, true)); });
 $('#timeline').addEventListener('keydown', e => { const m = e.target.closest('.mark[data-execution]'); if (m && e.key === 'Enter') openExecution(m.dataset.execution); });
 [['#show-evidence', 'evidence'], ['#show-script', 'script'], ['#show-log', 'log'], ['#show-verify', 'verify']].forEach(([sel, mode]) => $(sel).addEventListener('click', () => { detail.mode = mode; showDetail(); }));
+$('#recovery-again').addEventListener('click', async e => {
+  const b = e.currentTarget; b.disabled = true;
+  try { await openRecovery(recovery.id); } catch (error) { toast(error.message, true); } finally { b.disabled = false; }
+});
+$('#recovery-download').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([recoveryText()], {type: 'text/plain;charset=utf-8'}));
+  const a = document.createElement('a'); a.href = url; a.download = 'diagnostico-recuperacion.txt'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+$('#recovery-findings').addEventListener('click', copyCommand);
+$('#recovery-consoles').addEventListener('click', copyCommand);
+async function copyCommand(e) {
+  const b = e.target.closest('[data-copy]'); if (!b) return;
+  try { await navigator.clipboard.writeText(b.dataset.copy); b.innerHTML = icon('check'); icons(); setTimeout(() => { b.innerHTML = icon('copy'); icons(); }, 1500); }
+  catch { toast('No se pudo copiar; selecciona el texto y usa Ctrl+C.', true); }
+}
 $('#download-detail').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([detailText()], {type: 'text/plain;charset=utf-8'}));
   const a = document.createElement('a'); a.href = url; a.download = {script: 'estrategia.rma', log: 'ejecucion.log', verify: 'verificacion.log', evidence: 'evidencia.txt'}[detail.mode]; a.click();

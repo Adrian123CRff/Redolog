@@ -29,6 +29,33 @@ Antes de restaurar nada hay que saber que archivo fallo y en que estado esta la 
 En el gestor, la vista **Catalogo** muestra que estrategia respalda cada elemento,
 su ultima ejecucion, las piezas y el log.
 
+### Diagnostico desde el gestor
+
+En **Bases de datos**, el boton **Diagnosticar fallos** hace estas preguntas por el
+DBA y propone el paso a paso, con los comandos listos para copiar en SQL*Plus, RMAN
+o PowerShell. **Solo lee**: no restaura ni cambia nada; cada paso lo decide y lo
+ejecuta el DBA. Revisa:
+
+- contenedor detenido, instancia apagada, en NOMOUNT, montada, de solo lectura o restringida;
+- archivos borrados del disco: datafiles, control files, miembros de redo y SPFILE
+  (con la instancia caida usa la lista guardada en el ultimo diagnostico);
+- `V$RECOVER_FILE`, PDB cerrados, tablespaces fuera de linea, NOARCHIVELOG,
+  archivado detenido y usuarios bloqueados;
+- errores logicos: tablas en la papelera (`FLASHBACK TABLE ... TO BEFORE DROP`) y,
+  si hay una **foto del estado**, tablas que faltan o filas borradas
+  (consulta `AS OF SCN` o `RECOVER TABLE` de RMAN).
+
+**Tomar foto del estado** guarda el SCN y la cantidad de filas de cada tabla de usuario
+(`runtime/recuperacion/<base>/foto.txt`). Tomarla antes de la clase, despues de los
+respaldos. Cada diagnostico queda como evidencia en `diagnostico-<fecha>.txt` en la
+misma carpeta. Si al seguir un paso aparece un error nuevo, se vuelve a diagnosticar:
+con la base en NOMOUNT o MOUNT el diagnostico es mas preciso.
+
+Comprobado en el laboratorio el 10/10/2026: copia espejo de un redo borrada, tabla
+eliminada y filas borradas se detectaron y se recuperaron con los comandos propuestos.
+La consulta flashback necesita que la tabla exista desde antes de la foto (en una
+tabla creada segundos antes Oracle responde ORA-01466; para ese caso se ofrece `RECOVER TABLE`).
+
 ## Tabla de escenarios
 
 Estado del laboratorio desde el 10/10/2026: cada grupo de redo tiene dos miembros,

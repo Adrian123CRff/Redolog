@@ -128,6 +128,13 @@ public final class Main {
                 case "/api/release" -> { service.release(node.path("databaseId").asText()); send(x, 200, Map.of("ok", true)); }
                 case "/api/mail/test" -> send(x, 200, Map.of("sentTo", testMail(catalog, mailer, node.path("databaseId").asText())));
                 case "/api/diagnose" -> send(x, 200, service.diagnose(node.path("databaseId").asText()));
+                // Diagnostico de recuperacion: solo lee la base y propone el paso a paso; nunca restaura.
+                case "/api/recovery/diagnose", "/api/recovery/snapshot" -> {
+                    Models.require(!simulation, "El diagnostico de recuperacion necesita el laboratorio Oracle real.");
+                    var db = catalog.database(node.path("databaseId").asText());
+                    Path dir = runtime.resolve("recuperacion").resolve(db.id());
+                    send(x, 200, path.endsWith("snapshot") ? RecoveryAdvisor.snapshot(db.container(), dir) : RecoveryAdvisor.diagnose(db.container(), dir));
+                }
                 case "/api/strategies/delete" -> { service.delete(node.path("id").asText()); send(x, 200, Map.of("ok", true)); }
                 default -> send(x, 404, Map.of("error", "Ruta no encontrada."));
             }

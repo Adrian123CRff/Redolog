@@ -160,5 +160,11 @@
 <!-- SCRIPT .rma O ARCHIVO PLANO -->
 <dialog id="file-dialog" class="wide-dialog"><div class="dialog-head"><div><span class="eyebrow" id="file-eyebrow">SCRIPT</span><h2 id="file-title">Archivo</h2></div><button class="icon-button close-dialog" aria-label="Cerrar"><i data-lucide="x"></i></button></div>
   <div class="dialog-body"><p id="file-path" class="muted"></p><div class="detail-tabs"><button id="download-file" class="icon-button" title="Descargar" aria-label="Descargar"><i data-lucide="download"></i></button></div><pre id="file-content" tabindex="0"></pre></div></dialog>
+<!-- DIAGNOSTICO DE RECUPERACION -->
+<dialog id="recovery-dialog" class="wide-dialog"><div class="dialog-head"><div><span class="eyebrow">DIAGN&Oacute;STICO DE RECUPERACI&Oacute;N</span><h2 id="recovery-title">Base</h2></div><button class="icon-button close-dialog" aria-label="Cerrar"><i data-lucide="x"></i></button></div>
+  <div class="dialog-body"><p class="muted">Solo lee la base: no restaura ni cambia nada. Cada paso lo decide y ejecuta el DBA, en el orden indicado.</p><dl id="recovery-facts" class="facts"></dl>
+    <div class="detail-tabs"><button id="recovery-again" class="primary"><i data-lucide="refresh-cw"></i>Volver a diagnosticar</button><button id="recovery-download" class="icon-button" title="Descargar informe" aria-label="Descargar informe"><i data-lucide="download"></i></button></div>
+    <div id="recovery-consoles" class="recovery-consoles"></div>
+    <div id="recovery-findings"></div></div></dialog>
 <div id="toast" role="status" class="toast hidden"></div>
 </body></html>
