@@ -153,6 +153,8 @@ public final class RmanScript {
             if (gap > rpo) issues.add(new Issue("ADVERTENCIA", "FRECUENCIA_INSUFICIENTE", "Frecuencia insuficiente para la prioridad " + s.priority().toLowerCase()
                 + ": hasta " + gap + " h entre respaldos; el objetivo es de " + rpo + " h como maximo."));
         }
+        if (s.frequency().equals("UNA_VEZ") && List.of("LEVEL1", "CUMULATIVE").contains(s.method()))
+            issues.add(new Issue("ADVERTENCIA", "NIVEL1_AISLADO", "Un incremental nivel 1 de una sola vez casi no aporta: los incrementales se planifican en cadena junto a un nivel 0 periodico."));
         if (List.of("LEVEL1", "CUMULATIVE").contains(s.method()))
             issues.add(new Issue("INFORMATIVA", "NIVEL1", "Un incremental nivel 1 parte de un nivel 0 previo del mismo alcance; un respaldo FULL no sirve como base. Si no hay nivel 0, RMAN copia todos los bloques usados desde la creacion del datafile y lo registra como nivel 1."));
         if (st == null) {

@@ -23,6 +23,19 @@ class RmanScriptTest {
     }
 
     @Test
+    void explainsWhenIncrementalDoesNotApplyOrMakesLittleSense() {
+        var componentes = strategy("COMPONENTS", List.of(), List.of(), "LEVEL1", true, true, true, false);
+        assertEquals("FULL", componentes.method(), "los incrementales solo aplican a datafiles");
+        assertFalse(RmanScript.backup(componentes, DB).contains("INCREMENTAL"), "los componentes se respaldan completos");
+        var unaVez = new Strategy("s5", "EST005 - Prueba", "Prueba", "db1", "Adrian", "ALTA", true, "DATABASE", List.of(), List.of(),
+            true, true, true, "CUMULATIVE", false, false, "2026-09-01", "UNA_VEZ", null, List.of("02:00"), null, 60, "/opt/oracle/backup");
+        assertTrue(RmanScript.check(unaVez, status("ARCHIVELOG", 10_000_000)).stream().anyMatch(i -> i.code().equals("NIVEL1_AISLADO") && i.level().equals("ADVERTENCIA")));
+        var baseIncremental = strategy("DATABASE", List.of(), List.of(), "LEVEL0", true, true, true, true);
+        assertTrue(RmanScript.backup(baseIncremental, DB).contains("INCREMENTAL LEVEL 0"), "la base completa puede ser incremental");
+        assertTrue(RmanScript.check(baseIncremental, status("ARCHIVELOG", 10_000_000)).stream().noneMatch(i -> i.level().equals("ERROR")));
+    }
+
+    @Test
     void incrementalCumulativeTablespaceWithAllComponents() {
         String script = RmanScript.backup(strategy("TABLESPACE", List.of("freepdb1:lab_datos"), null, "CUMULATIVE", true, true, true, true), DB);
         assertTrue(script.contains("ALLOCATE CHANNEL d1 DEVICE TYPE DISK FORMAT '/opt/oracle/backup/%d_%T_%U.bkp';"));

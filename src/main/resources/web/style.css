@@ -341,3 +341,12 @@ td .link-button { font-size: 11px; text-align: left; }
 .code-block { position: relative; margin-top: 6px; }
 .code-block pre { min-height: 0; max-height: none; padding: 10px 44px 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-block .icon-button { position: absolute; top: 4px; right: 4px; background: #2c3a3c; color: #d1e2d9; border-color: #3b4b4d; }
+
+/* Guia de tipos de respaldo: cuando si y cuando no */
+.method-guide { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 6px 0 10px; font-size: 12px; }
+.method-guide > div { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fbfcfc; }
+.method-guide > div:first-child { border-left: 3px solid #2f8f5b; }
+.method-guide > div:nth-child(2) { border-left: 3px solid #c0504d; }
+.method-guide .ojo { border-left: 3px solid #d9a21b; background: #fffaf0; grid-column: 1 / -1; }
+.method-guide ul { margin: 4px 0 0; padding-left: 18px; }
+.method-guide li { margin: 2px 0; }

@@ -29,6 +29,35 @@ const METHOD_HINT = {
   LEVEL1: 'Solo bloques cambiados desde el último nivel 0 o 1. Rápido y pequeño; al recuperar se aplican todos los niveles 1 desde el nivel 0.',
   CUMULATIVE: 'Bloques cambiados desde el último nivel 0. Crece cada día, pero al recuperar se aplica solo el último.'
 };
+// Cuándo conviene cada tipo de respaldo y cuándo no (se muestra en el paso 3 del constructor).
+const METHOD_GUIDE = {
+  FULL: {
+    si: ['Copias únicas o esporádicas: antes de un cambio grande, una migración o para guardar fuera del servidor.', 'Bases pequeñas en las que copiar todo cada vez no es un problema.'],
+    no: ['Como base de incrementales: un nivel 1 no reconoce un completo como punto de partida y copia todo de nuevo.', 'Respaldos frecuentes de bases grandes: cada ejecución copia todos los bloques usados.']
+  },
+  LEVEL0: {
+    si: ['Base semanal de una cadena incremental (por ejemplo, domingo en la madrugada).', 'Después de un OPEN RESETLOGS o de agregar tablespaces o datafiles nuevos.'],
+    no: ['Varias veces al día: ocupa y tarda lo mismo que un completo.']
+  },
+  LEVEL1: {
+    si: ['Respaldos diarios cuando el espacio o la ventana de respaldo son limitados: copia solo lo cambiado desde el último incremental.'],
+    no: ['Cuando la recuperación debe ser rápida: hay que aplicar todos los nivel 1 desde el nivel 0, y si falta uno la cadena se corta.', 'Sin un nivel 0 previo del mismo alcance.']
+  },
+  CUMULATIVE: {
+    si: ['Respaldos diarios con recuperación rápida: basta el nivel 0 más el último acumulativo.'],
+    no: ['Bases con muchos cambios y poco espacio: crece cada día hasta el siguiente nivel 0.', 'Sin un nivel 0 previo del mismo alcance.']
+  }
+};
+function methodGuide(scope, method, frequency) {
+  if (scope === 'COMPONENTS')
+    return {si: ['Archived logs, control file y SPFILE se respaldan siempre completos.'], no: ['Incremental: solo aplica a datafiles (base completa, tablespaces o datafiles).'], ojo: []};
+  const g = METHOD_GUIDE[method], ojo = [];
+  if (scope === 'DATABASE' && method !== 'FULL') ojo.push('Base completa incremental es válido y lo habitual: "Full" describe QUÉ se respalda (toda la base); el tipo describe CÓMO (todos los bloques o solo los cambiados).');
+  if (scope === 'DATABASE' && method === 'FULL') ojo.push('El botón "Full: marcar todo" define el alcance (toda la base); el tipo "Completo (FULL)" define que no es incremental. Son decisiones distintas.');
+  if (['TABLESPACE', 'DATAFILE'].includes(scope) && ['LEVEL1', 'CUMULATIVE'].includes(method)) ojo.push('El nivel 0 debe cubrir los mismos tablespaces o datafiles (un nivel 0 de la base completa también sirve).');
+  if (frequency === 'UNA_VEZ' && ['LEVEL1', 'CUMULATIVE'].includes(method)) ojo.push('Un nivel 1 de una sola vez casi no tiene sentido: los incrementales se planifican en cadena junto a un nivel 0.');
+  return {si: g.si, no: g.no, ojo};
+}
 const LEVEL_TEXT = {FULL: 'Sin nivel (completo)', LEVEL0: '0', LEVEL1: '1 diferencial', CUMULATIVE: '1 acumulativo'};
 const PRIORITY_HINT = {
   ALTA: 'Alta: información crítica para la continuidad de la operación. Objetivo: un respaldo correcto cada 24 h como máximo.',
@@ -508,6 +537,10 @@ function syncForm() {
   field('method').disabled = scope === 'COMPONENTS';
   $('#level-output').textContent = scope === 'COMPONENTS' ? 'No aplica (solo componentes)' : LEVEL_TEXT[method];
   $('#method-hint').textContent = scope === 'COMPONENTS' ? 'Los archived logs, el control file y el SPFILE se copian completos; los incrementales solo aplican a datafiles.' : METHOD_HINT[method];
+  const guia = methodGuide(scope, method, frequency);
+  setHtml($('#method-guide'), `<div><b>Cuándo sí</b><ul>${guia.si.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>
+    <div><b>Cuándo no</b><ul>${guia.no.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>
+    ${guia.ojo.length ? `<div class="ojo"><b>Importante</b><ul>${guia.ojo.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}`);
   $('#priority-hint').textContent = PRIORITY_HINT[field('priority').value];
   renderChain(); icons();
   $('#days-field').classList.toggle('hidden', frequency === 'DIARIA' || frequency === 'UNA_VEZ');
